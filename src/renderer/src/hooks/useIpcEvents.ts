@@ -1119,6 +1119,31 @@ export function useIpcEvents(): void {
       })
     )
 
+    // Why: per-repo run-script lifecycle. Main owns the runPtyByRepo registry
+    // (src/main/ipc/run-script.ts) and broadcasts `run:started` / `run:exited`;
+    // the slice mirrors those into per-worktree status so the activity-bar dot
+    // and Run panel reflect live state. Setup-script equivalents
+    // (`setup:started` / `setup:exited`) are not wired here yet — they arrive
+    // in Phase 7. The slice already exposes handleSetupStarted /
+    // handleSetupExited, so the wiring will be a one-liner when those IPC
+    // events ship.
+    unsubs.push(
+      window.api.runScript.onStarted((event) => {
+        useAppStore.getState().handleRunStarted({
+          worktreeId: event.worktreeId,
+          ptyId: event.ptyId
+        })
+      })
+    )
+    unsubs.push(
+      window.api.runScript.onExited((event) => {
+        useAppStore.getState().handleRunExited({
+          worktreeId: event.worktreeId,
+          code: event.code
+        })
+      })
+    )
+
     return () => unsubs.forEach((fn) => fn())
   }, [])
 }
