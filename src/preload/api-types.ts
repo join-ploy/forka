@@ -125,6 +125,14 @@ import type { CliInstallStatus } from '../shared/cli-install-types'
 import type { E2EConfig } from '../shared/e2e-config'
 import type { AgentHookInstallStatus } from '../shared/agent-hook-types'
 import type { AgentStatusIpcPayload } from '../shared/agent-status-types'
+import type {
+  RunExitedEvent,
+  RunStartArgs,
+  RunStartedEvent,
+  RunStartResult,
+  RunStopArgs,
+  RunStopResult
+} from '../shared/run-script-types'
 import type { RuntimeStatus, RuntimeSyncWindowGraph } from '../shared/runtime-types'
 import type {
   RuntimeMobileMarkdownRequest,
@@ -1333,6 +1341,12 @@ export type PreloadApi = {
     }>
     revokeDevice: (args: { deviceId: string }) => Promise<{ revoked: boolean }>
     isWebSocketReady: () => Promise<{ ready: boolean; endpoint: string | null }>
+  }
+  runScript: {
+    start: (args: RunStartArgs) => Promise<RunStartResult>
+    stop: (args: RunStopArgs) => Promise<RunStopResult>
+    onStarted: (callback: (event: RunStartedEvent) => void) => () => void
+    onExited: (callback: (event: RunExitedEvent) => void) => () => void
   }
 }
 

@@ -11,9 +11,20 @@ import { createRunRunnerScript, getEffectiveHooks } from '../hooks'
 import type { IPtyProvider } from '../providers/types'
 import type { Store } from '../persistence'
 import { buildSetupRunnerCommand } from '../../shared/setup-runner-command'
+import type {
+  RunExitedEvent,
+  RunStartedEvent,
+  RunStartResult,
+  RunStopResult
+} from '../../shared/run-script-types'
 import { parseWorktreeId } from './worktree-logic'
 
 import { getLocalPtyProvider, getSshPtyProvider } from './pty'
+
+// Why: re-export the IPC contract types so existing main-side importers
+// (and the test file) keep their import paths stable while the canonical
+// declarations now live in src/shared for renderer + preload reuse.
+export type { RunStartResult, RunStopResult } from '../../shared/run-script-types'
 
 type RunPtyEntry = {
   ptyId: string
@@ -66,25 +77,14 @@ export const _testing = { get, set, clearIfMatches, clear, nextGen }
 // failure color when the user kills a run.
 const SIGINT_EXIT_CODE = 130
 
-export type RunStartResult =
-  | { ok: true; ptyId: string }
-  | {
-      ok: false
-      reason:
-        | 'no-run-script'
-        | 'repo-not-found'
-        | 'invalid-worktree'
-        | 'no-provider'
-        | 'spawn-failed'
-    }
-
-export type RunStopResult = { ok: true } | { ok: false; reason: 'not-running' | 'no-provider' }
-
 type RunIpcDeps = {
   store: Store
 }
 
-function broadcast(channel: string, payload: unknown): void {
+function broadcast(
+  channel: 'run:started' | 'run:exited',
+  payload: RunStartedEvent | RunExitedEvent
+): void {
   // Why: the run lifecycle dot must reach every visible Orca window, not only the
   // most-recently-focused one. Multiple windows attached to the same main process
   // each render the same right sidebar, so a per-window send would leave the

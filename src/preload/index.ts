@@ -33,6 +33,14 @@ import type {
 } from '../shared/types'
 import type { RuntimeStatus, RuntimeSyncWindowGraph } from '../shared/runtime-types'
 import type {
+  RunExitedEvent,
+  RunStartArgs,
+  RunStartedEvent,
+  RunStartResult,
+  RunStopArgs,
+  RunStopResult
+} from '../shared/run-script-types'
+import type {
   RuntimeMobileMarkdownRequest,
   RuntimeMobileMarkdownResponse
 } from '../shared/mobile-markdown-document'
@@ -2478,6 +2486,30 @@ const api = {
      *  cannot resurrect it. Fire-and-forget; no response. */
     drop: (paneKey: string): void => {
       ipcRenderer.send('agentStatus:drop', paneKey)
+    }
+  },
+
+  runScript: {
+    /** Spawn (or replace) the per-repo run-script PTY for the given worktree.
+     *  Resolves to a structured result so callers can react to spawn-failed
+     *  or no-run-script without catching invoke rejections. */
+    start: (args: RunStartArgs): Promise<RunStartResult> => ipcRenderer.invoke('run:start', args),
+
+    /** Stop the in-flight run PTY for a repo (no-op when nothing is running). */
+    stop: (args: RunStopArgs): Promise<RunStopResult> => ipcRenderer.invoke('run:stop', args),
+
+    onStarted: (callback: (event: RunStartedEvent) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: RunStartedEvent) =>
+        callback(payload)
+      ipcRenderer.on('run:started', listener)
+      return () => ipcRenderer.removeListener('run:started', listener)
+    },
+
+    onExited: (callback: (event: RunExitedEvent) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: RunExitedEvent) =>
+        callback(payload)
+      ipcRenderer.on('run:exited', listener)
+      return () => ipcRenderer.removeListener('run:exited', listener)
     }
   }
 }
