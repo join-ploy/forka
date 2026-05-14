@@ -126,6 +126,24 @@ describe('parseOrcaYaml', () => {
     })
   })
 
+  it('parses scripts.run as a single-line string', () => {
+    const yaml = `scripts:\n  run: pnpm dev\n`
+    const result = parseOrcaYaml(yaml)
+    expect(result?.scripts.run).toBe('pnpm dev')
+  })
+
+  it('parses scripts.run as a block scalar', () => {
+    const yaml = `scripts:\n  run: |\n    pnpm install\n    pnpm dev\n`
+    const result = parseOrcaYaml(yaml)
+    expect(result?.scripts.run).toBe('pnpm install\npnpm dev')
+  })
+
+  it('returns null when only scripts.run is empty and no other keys exist', () => {
+    const yaml = `scripts:\n  run: ''\n`
+    const result = parseOrcaYaml(yaml)
+    expect(result).toBeNull()
+  })
+
   it('parses issueCommand alongside scripts', () => {
     const yaml = [
       'scripts:',
