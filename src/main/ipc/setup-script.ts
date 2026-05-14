@@ -11,7 +11,7 @@ import { BrowserWindow, ipcMain } from 'electron'
 import { createSetupRunnerScript, getEffectiveHooks } from '../hooks'
 import type { IPtyProvider } from '../providers/types'
 import type { Store } from '../persistence'
-import { buildSetupRunnerCommand } from '../../shared/setup-runner-command'
+import { buildSelfTerminatingScriptCommand } from '../../shared/setup-runner-command'
 import type {
   SetupExitedEvent,
   SetupStartedEvent,
@@ -177,7 +177,10 @@ async function setupStartLocked(
   const workspaceName = deps.store.getWorktreeMeta(args.worktreeId)?.workspaceName
   const wrapped = createSetupRunnerScript(repo, worktreePath, script, workspaceName)
   const generation = nextGen()
-  const command = buildSetupRunnerCommand(
+  // Why: self-terminating wrapper exits the parent shell when the runner exits,
+  // so node-pty's onExit fires and setup:exited is broadcast. Without this the
+  // shell prompt returns and the lifecycle dot would pulse forever.
+  const command = buildSelfTerminatingScriptCommand(
     wrapped.runnerScriptPath,
     process.platform === 'win32' ? 'windows' : 'posix'
   )
