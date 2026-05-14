@@ -292,6 +292,38 @@ describe('handleRunStart', () => {
     expect(sshProvider.spawn).toHaveBeenCalledTimes(1)
     expect(provider.spawn).not.toHaveBeenCalled()
   })
+
+  it('dedupes concurrent starts for the same repo so spawn runs once', async () => {
+    // Why: autostart + user Cmd+R could otherwise both observe prior===null,
+    // both spawn, both set() — orphaning the loser's PTY.
+    const store = makeStore(repo)
+    let release: (v: { id: string }) => void = () => {}
+    provider.spawn.mockReset().mockImplementationOnce(() => new Promise((r) => (release = r)))
+    const a = handleRunStart({ repoId: repo.id, worktreeId }, { store: store as never })
+    const b = handleRunStart({ repoId: repo.id, worktreeId }, { store: store as never })
+    release({ id: 'pty-NEW' })
+    const ok = { ok: true, ptyId: 'pty-NEW' }
+    expect(await Promise.all([a, b])).toEqual([ok, ok])
+    expect(provider.spawn).toHaveBeenCalledTimes(1)
+    expect(registry.get(repo.id)).toMatchObject({ ptyId: 'pty-NEW', worktreeId })
+  })
+
+  it('returns spawn-failed, leaves registry clean, and a subsequent start succeeds', async () => {
+    // Why: structured failure (vs unstructured invoke rejection) lets the
+    // renderer react and keeps the registry clean for retries.
+    const store = makeStore(repo)
+    provider.spawn.mockReset().mockRejectedValueOnce(new Error('boom'))
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const result = await handleRunStart({ repoId: repo.id, worktreeId }, { store: store as never })
+    errSpy.mockRestore()
+    expect(result).toEqual({ ok: false, reason: 'spawn-failed' })
+    expect(registry.get(repo.id)).toBeNull()
+    expect(win.webContents.send).not.toHaveBeenCalled()
+    // Retry succeeds — proves the in-flight map released after failure.
+    provider.spawn.mockResolvedValueOnce({ id: 'pty-RECOVER' })
+    const retry = await handleRunStart({ repoId: repo.id, worktreeId }, { store: store as never })
+    expect(retry).toEqual({ ok: true, ptyId: 'pty-RECOVER' })
+  })
 })
 
 describe('handleRunStop', () => {

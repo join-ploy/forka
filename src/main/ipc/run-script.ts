@@ -24,6 +24,14 @@ type RunPtyEntry = {
 const runPtyByRepo = new Map<string, RunPtyEntry>()
 let nextGeneration = 0
 
+// Why: serialize concurrent handleRunStart calls per repo so two near-simultaneous
+// invocations (e.g. autostart hook + user Cmd+R, or an IPC retry) cannot both
+// observe the same `prior`, both shutdown+spawn, and both call `set()` —
+// leaving the loser's PTY orphaned with an onExit that will never match. The
+// second caller awaits the first's outcome, then proceeds against a clean
+// registry.
+const inFlightStartByRepo = new Map<string, Promise<RunStartResult>>()
+
 function get(repoId: string): RunPtyEntry | null {
   return runPtyByRepo.get(repoId) ?? null
 }
@@ -45,6 +53,7 @@ function nextGen(): number {
 
 function clear(): void {
   runPtyByRepo.clear()
+  inFlightStartByRepo.clear()
 }
 
 // Why: exported under `_testing` to discourage callers outside this module from
@@ -59,7 +68,15 @@ const SIGINT_EXIT_CODE = 130
 
 export type RunStartResult =
   | { ok: true; ptyId: string }
-  | { ok: false; reason: 'no-run-script' | 'repo-not-found' | 'invalid-worktree' | 'no-provider' }
+  | {
+      ok: false
+      reason:
+        | 'no-run-script'
+        | 'repo-not-found'
+        | 'invalid-worktree'
+        | 'no-provider'
+        | 'spawn-failed'
+    }
 
 export type RunStopResult = { ok: true } | { ok: false; reason: 'not-running' | 'no-provider' }
 
@@ -87,6 +104,24 @@ function getProviderForConnection(connectionId: string | null | undefined): IPty
 }
 
 export async function handleRunStart(
+  args: { repoId: string; worktreeId: string },
+  deps: RunIpcDeps
+): Promise<RunStartResult> {
+  // Why: dedupe concurrent starts for the same repo so the kill+spawn sequence
+  // is serialized. The follower awaits the leader's promise rather than racing
+  // to read `prior` before the leader's `set()` lands.
+  const inFlight = inFlightStartByRepo.get(args.repoId)
+  if (inFlight) {
+    return inFlight
+  }
+  const promise = runStartLocked(args, deps).finally(() => {
+    inFlightStartByRepo.delete(args.repoId)
+  })
+  inFlightStartByRepo.set(args.repoId, promise)
+  return promise
+}
+
+async function runStartLocked(
   args: { repoId: string; worktreeId: string },
   deps: RunIpcDeps
 ): Promise<RunStartResult> {
@@ -147,10 +182,11 @@ export async function handleRunStart(
     process.platform === 'win32' ? 'windows' : 'posix'
   )
 
-  // Why: bind onExit BEFORE spawn returns is impossible because we need the new
-  // ptyId to filter, but onExit subscriptions for already-spawned PTYs are fine
-  // — node-pty fires synchronously after process exit, and the registry/event
-  // ordering only matters for cleanup correctness (see clearIfMatches guard).
+  // Why: a spawn failure must surface as a structured result, not a thrown
+  // rejection — the IPC handler's caller would otherwise see an unstructured
+  // invoke rejection while the renderer has no `run:started` event to react
+  // to. Return `spawn-failed` so the caller can present an error and the
+  // registry stays clean (no `set()` was called).
   let spawned: { id: string }
   try {
     spawned = await provider.spawn({
@@ -164,7 +200,7 @@ export async function handleRunStart(
     console.error(
       `[run-script] spawn failed for repo ${args.repoId}: ${err instanceof Error ? err.message : String(err)}`
     )
-    throw err
+    return { ok: false, reason: 'spawn-failed' }
   }
 
   set(args.repoId, { ptyId: spawned.id, worktreeId: args.worktreeId, generation })
