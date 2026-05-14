@@ -83,6 +83,15 @@ vi.mock('@/store/selectors', () => ({
   useRepoById: () => ({ id: 'repo-1', kind: 'git', path: '/tmp/repo' })
 }))
 
+// Why: SidebarPtyTerminal pulls in xterm + the keyboard-layout probe + the
+// per-tab settings store. None of that is the subject of these tests, which
+// only assert the header text and Re-run / Stop button wiring of the view
+// shell. Stub it with an inert placeholder so renders complete in the
+// `node` test environment (no `window`, no DOM).
+vi.mock('./SidebarPtyTerminal', () => ({
+  default: () => null
+}))
+
 const IDLE: ScriptState = { ptyId: null, status: 'idle', exitCode: null, startedAt: null }
 
 describe('RunPanelView — empty state', () => {

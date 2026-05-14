@@ -63,8 +63,42 @@ vi.mock('@xterm/addon-fit', () => {
   return { FitAddon }
 })
 
-vi.mock('@/lib/pane-manager/pane-terminal-options', () => ({
-  buildDefaultTerminalOptions: () => ({})
+// Why: SidebarPtyTerminal builds its initial xterm options via the shared
+// settings → ITerminalOptions module (the same one the regular pane uses)
+// and reapplies on settings/theme change. Mock both entry points so we can
+// assert that the wiring fires without depending on real settings shape.
+const buildOptionsCalls: { settings: unknown; deps: unknown }[] = []
+const applyOptionsCalls: { terminal: unknown; settings: unknown; deps: unknown }[] = []
+vi.mock('@/lib/pane-manager/build-terminal-options', () => ({
+  buildTerminalOptionsFromSettings: (settings: unknown, deps: unknown) => {
+    buildOptionsCalls.push({ settings, deps })
+    return { fontSize: 14 }
+  },
+  applyTerminalOptionsToTerminal: (terminal: unknown, settings: unknown, deps: unknown) => {
+    applyOptionsCalls.push({ terminal, settings, deps })
+  }
+}))
+
+// Why: the settings + system-theme reactivity hooks read out of the
+// renderer store / a matchMedia subscription. Stub both so the component
+// gets deterministic inputs. The store mock is keyed by selector so callers
+// can assert which slice was read.
+const fakeSettings = {
+  theme: 'system',
+  terminalFontSize: 14,
+  terminalFontFamily: 'JetBrainsMono Nerd Font'
+}
+vi.mock('@/store', () => ({
+  useAppStore: (selector: (state: unknown) => unknown) => selector({ settings: fakeSettings })
+}))
+vi.mock('@/components/terminal-pane/use-system-prefers-dark', () => ({
+  useSystemPrefersDark: () => true
+}))
+// Why: the regular pane resolves a four-mode Option-as-Alt value via a
+// hook that subscribes to a probe; the sidebar terminal does the same so
+// keystroke handling stays consistent. Stub it to a fixed value.
+vi.mock('@/lib/keyboard-layout/use-effective-mac-option-as-alt', () => ({
+  useEffectiveMacOptionAsAlt: () => 'true'
 }))
 
 vi.mock('@/components/terminal-pane/pty-dispatcher', () => ({
@@ -80,10 +114,29 @@ vi.mock('@/components/terminal-pane/pty-dispatcher', () => ({
   }
 }))
 
-// Why: capture the effect body so the test can run it explicitly with a
+// Why: capture the effect bodies so tests can run them explicitly with a
 // non-null containerRef. React's static renderer otherwise skips effects.
-type EffectRecord = { run: () => void; cleanup: (() => void) | void }
-let recordedEffect: EffectRecord | null = null
+// We track each effect (mount + reactive re-apply) separately so a test can
+// drive them in the order React would.
+type EffectRecord = {
+  fn: () => void | (() => void)
+  cleanup: (() => void) | void
+}
+const recordedEffects: EffectRecord[] = []
+function runEffect(idx: number): void {
+  const eff = recordedEffects[idx]
+  if (!eff) {
+    throw new Error(`no effect recorded at index ${idx}`)
+  }
+  const cleanup = eff.fn()
+  eff.cleanup = typeof cleanup === 'function' ? cleanup : undefined
+}
+function cleanupEffect(idx: number): void {
+  const eff = recordedEffects[idx]
+  if (eff?.cleanup) {
+    eff.cleanup()
+  }
+}
 
 vi.mock('react', async () => {
   const actual = await vi.importActual<typeof ReactNS>('react')
@@ -91,13 +144,7 @@ vi.mock('react', async () => {
     ...actual,
     useRef: <T,>(_initial: T) => ({ current: { tagName: 'DIV' } as unknown as T }),
     useEffect: (fn: () => void | (() => void)) => {
-      recordedEffect = {
-        run: () => {
-          const cleanup = fn()
-          recordedEffect = { run: recordedEffect!.run, cleanup }
-        },
-        cleanup: undefined
-      }
+      recordedEffects.push({ fn, cleanup: undefined })
     }
   }
 })
@@ -113,7 +160,9 @@ beforeEach(() => {
   exitSubs.length = 0
   ptyResize.mockClear()
   ptyWrite.mockClear()
-  recordedEffect = null
+  recordedEffects.length = 0
+  buildOptionsCalls.length = 0
+  applyOptionsCalls.length = 0
 
   // Why: window.api is the preload bridge. Stub the two methods the
   // component calls directly (resize after fit, write on user keystrokes).
@@ -159,15 +208,18 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  recordedEffect = null
+  recordedEffects.length = 0
 })
 
 describe('SidebarPtyTerminal', () => {
   it('subscribes to pty data + exit on mount with the given ptyId', async () => {
     const { default: SidebarPtyTerminal } = await import('./SidebarPtyTerminal')
     renderToStaticMarkup(<SidebarPtyTerminal ptyId="pty-A" />)
-    expect(recordedEffect).not.toBeNull()
-    recordedEffect!.run()
+    // The component records two effects: (0) mount/teardown, (1) reactive
+    // settings/theme apply. Run the mount effect first so the terminal
+    // exists before the apply effect targets it.
+    expect(recordedEffects.length).toBeGreaterThanOrEqual(1)
+    runEffect(0)
 
     expect(createdTerms).toHaveLength(1)
     expect(createdFits).toHaveLength(1)
@@ -181,7 +233,7 @@ describe('SidebarPtyTerminal', () => {
   it('forwards pty data to terminal.write and unsubscribes on cleanup', async () => {
     const { default: SidebarPtyTerminal } = await import('./SidebarPtyTerminal')
     renderToStaticMarkup(<SidebarPtyTerminal ptyId="pty-1" />)
-    recordedEffect!.run()
+    runEffect(0)
 
     // Push a data chunk through the recorded callback and confirm it lands on
     // the (mocked) terminal.
@@ -189,7 +241,7 @@ describe('SidebarPtyTerminal', () => {
     expect(createdTerms[0].write).toHaveBeenCalledWith('hello\r\n')
 
     // Cleanup: every subscription + addon must be released.
-    recordedEffect!.cleanup?.()
+    cleanupEffect(0)
     expect(dataSubs[0].off).toHaveBeenCalledOnce()
     expect(exitSubs[0].off).toHaveBeenCalledOnce()
     expect(inputDisposers[0]).toHaveBeenCalledOnce()
@@ -200,7 +252,7 @@ describe('SidebarPtyTerminal', () => {
   it('forwards user keystrokes through window.api.pty.write', async () => {
     const { default: SidebarPtyTerminal } = await import('./SidebarPtyTerminal')
     renderToStaticMarkup(<SidebarPtyTerminal ptyId="pty-2" />)
-    recordedEffect!.run()
+    runEffect(0)
 
     // term.onData is the input subscription. Replay the registered callback
     // to simulate the user typing Ctrl+C (\x03).
@@ -215,19 +267,61 @@ describe('SidebarPtyTerminal', () => {
     const { default: SidebarPtyTerminal } = await import('./SidebarPtyTerminal')
 
     renderToStaticMarkup(<SidebarPtyTerminal ptyId="pty-old" />)
-    recordedEffect!.run()
+    runEffect(0)
     expect(dataSubs).toHaveLength(1)
     expect(dataSubs[0].ptyId).toBe('pty-old')
 
     // Tear down the first subscription as React would on a key/dep change.
-    recordedEffect!.cleanup?.()
+    cleanupEffect(0)
     expect(dataSubs[0].off).toHaveBeenCalledOnce()
 
     // Re-mount with a new id; the new effect must subscribe to the new id.
+    recordedEffects.length = 0
     renderToStaticMarkup(<SidebarPtyTerminal ptyId="pty-new" />)
-    recordedEffect!.run()
+    runEffect(0)
     expect(dataSubs).toHaveLength(2)
     expect(dataSubs[1].ptyId).toBe('pty-new')
     expect(createdTerms).toHaveLength(2)
+  })
+
+  it('builds initial xterm options via the shared settings → ITerminalOptions module', async () => {
+    // The single sidebar PTY must visually match the regular pane: same
+    // font size, font family, theme. We assert the wiring (correct module
+    // is called with current settings + system theme + resolved Option-as-
+    // Alt) rather than re-asserting the builder's outputs, which the
+    // build-terminal-options tests cover end-to-end.
+    const { default: SidebarPtyTerminal } = await import('./SidebarPtyTerminal')
+    renderToStaticMarkup(<SidebarPtyTerminal ptyId="pty-styled" />)
+    runEffect(0)
+
+    expect(buildOptionsCalls).toHaveLength(1)
+    expect(buildOptionsCalls[0].settings).toBe(fakeSettings)
+    expect(buildOptionsCalls[0].deps).toMatchObject({
+      effectiveMacOptionAsAlt: 'true',
+      systemPrefersDark: true
+    })
+    // Sidebar has no zoom UI, so it must not pass a paneSize override —
+    // letting the global terminalFontSize win.
+    expect((buildOptionsCalls[0].deps as { paneSize?: number }).paneSize).toBeUndefined()
+  })
+
+  it('reapplies settings + theme via applyTerminalOptionsToTerminal when the reactive effect runs', async () => {
+    // Settings + system theme can change mid-session (font swap, dark/light
+    // flip, terminal-color override). The component's reactive effect must
+    // call the per-terminal apply helper so the live PTY view picks up the
+    // change without a remount.
+    const { default: SidebarPtyTerminal } = await import('./SidebarPtyTerminal')
+    renderToStaticMarkup(<SidebarPtyTerminal ptyId="pty-react" />)
+    runEffect(0)
+    // Now simulate React running the reactive apply effect (settings dep).
+    runEffect(1)
+
+    expect(applyOptionsCalls).toHaveLength(1)
+    expect(applyOptionsCalls[0].terminal).toBe(createdTerms[0])
+    expect(applyOptionsCalls[0].settings).toBe(fakeSettings)
+    expect(applyOptionsCalls[0].deps).toMatchObject({
+      effectiveMacOptionAsAlt: 'true',
+      systemPrefersDark: true
+    })
   })
 })
