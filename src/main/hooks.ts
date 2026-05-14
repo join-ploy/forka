@@ -115,6 +115,42 @@ export function parseOrcaYaml(content: string): OrcaHooks | null {
 }
 
 /**
+ * Parse a conductor.json file. Reads only the scripts.{setup,run,archive}
+ * block; all other top-level keys are silently ignored. We're cherry-picking
+ * the script bag from Conductor's schema, not consuming it whole.
+ */
+export function parseConductorJson(content: string): OrcaHooks | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return null
+  }
+  const scripts = (parsed as { scripts?: unknown }).scripts
+  if (!scripts || typeof scripts !== 'object') {
+    return null
+  }
+  const s = scripts as Record<string, unknown>
+  const out: OrcaHooks = { scripts: {} }
+  if (typeof s.setup === 'string' && s.setup.trim()) {
+    out.scripts.setup = s.setup
+  }
+  if (typeof s.run === 'string' && s.run.trim()) {
+    out.scripts.run = s.run
+  }
+  if (typeof s.archive === 'string' && s.archive.trim()) {
+    out.scripts.archive = s.archive
+  }
+  if (!out.scripts.setup && !out.scripts.run && !out.scripts.archive) {
+    return null
+  }
+  return out
+}
+
+/**
  * Load hooks from orca.yaml in the given repo root.
  */
 export function loadHooks(repoPath: string): OrcaHooks | null {
