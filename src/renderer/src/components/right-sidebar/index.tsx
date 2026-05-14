@@ -1,27 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Files, Search, GitBranch, ListChecks, Cable, PanelRight } from 'lucide-react'
+import { PanelRight } from 'lucide-react'
 import { useAppStore } from '@/store'
 import { getRepoMapFromState, useActiveWorktree, useRepoById } from '@/store/selectors'
 import { cn } from '@/lib/utils'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
-import type { RightSidebarTab, ActivityBarPosition } from '@/store/slices/editor'
 import type { CheckStatus } from '../../../../shared/types'
 import { isFolderRepo } from '../../../../shared/repo-kind'
 import { findWorktreeById } from '@/store/slices/worktree-helpers'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
-import {
-  ContextMenu,
-  ContextMenuTrigger,
-  ContextMenuContent,
-  ContextMenuLabel,
-  ContextMenuRadioGroup,
-  ContextMenuRadioItem
-} from '@/components/ui/context-menu'
+import { ContextMenu, ContextMenuTrigger } from '@/components/ui/context-menu'
 import FileExplorer from './FileExplorer'
 import SourceControl from './SourceControl'
 import SearchPanel from './Search'
 import ChecksPanel from './ChecksPanel'
 import PortsPanel from './PortsPanel'
+import { ACTIVITY_ITEMS, ActivityBarButton, ActivityBarPositionMenu } from './activity-bar'
 
 const MIN_WIDTH = 220
 // Why: long file names (e.g. construction drawing sheets, multi-part document
@@ -33,6 +26,8 @@ const MIN_NON_SIDEBAR_AREA = 320
 const ABSOLUTE_FALLBACK_MAX_WIDTH = 2000
 
 const ACTIVITY_BAR_SIDE_WIDTH = 40
+
+const isMac = navigator.userAgent.includes('Mac')
 
 function branchDisplayName(branch: string): string {
   return branch.replace(/^refs\/heads\//, '')
@@ -59,58 +54,6 @@ function getActiveChecksStatus(state: ReturnType<typeof useAppStore.getState>): 
   const prCacheKey = `${activeRepo.path}::${branch}`
   return state.prCache[prCacheKey]?.data?.checksStatus ?? null
 }
-
-type ActivityBarItem = {
-  id: RightSidebarTab
-  icon: React.ComponentType<{ size?: number; className?: string }>
-  title: string
-  shortcut: string
-  /** When true, hidden for non-git (folder-mode) repos. */
-  gitOnly?: boolean
-  /** When true, only shown when at least one SSH connection is active. */
-  sshOnly?: boolean
-}
-
-const isMac = navigator.userAgent.includes('Mac')
-const mod = isMac ? '\u2318' : 'Ctrl+'
-
-const ACTIVITY_ITEMS: ActivityBarItem[] = [
-  {
-    id: 'explorer',
-    icon: Files,
-    title: 'Explorer',
-    shortcut: `${isMac ? '\u21E7' : 'Shift+'}${mod}E`
-  },
-  {
-    id: 'search',
-    icon: Search,
-    title: 'Search',
-    shortcut: `${isMac ? '\u21E7' : 'Shift+'}${mod}F`
-  },
-  {
-    id: 'source-control',
-    icon: GitBranch,
-    title: 'Source Control',
-    shortcut: `${isMac ? '\u21E7' : 'Shift+'}${mod}G`,
-    gitOnly: true
-  },
-  {
-    id: 'checks',
-    icon: ListChecks,
-    title: 'Checks',
-    shortcut: `${isMac ? '\u21E7' : 'Shift+'}${mod}K`,
-    gitOnly: true
-  },
-  {
-    id: 'ports',
-    icon: Cable,
-    title: 'Ports',
-    // Why: Ctrl+Shift+I is the DevTools accelerator on Windows/Linux, so this
-    // shortcut is macOS-only. On other platforms the tooltip omits it.
-    shortcut: isMac ? `\u21E7${mod}I` : '',
-    sshOnly: true
-  }
-]
 
 function RightSidebarInner(): React.JSX.Element {
   const activeWorktree = useActiveWorktree()
@@ -234,17 +177,18 @@ function RightSidebarInner(): React.JSX.Element {
           that froze the app for seconds on Windows.  Each panel now reacts
           to activeWorktreeId changes via store subscriptions and reset
           effects, keeping the component instance alive across switches. */}
-      {/* Why: live agent activity now renders inline inside each workspace
-          card (WorktreeCardAgents, toggled by the 'inline-agents' card
-          property) rather than in a bottom-docked dashboard panel that
-          competed with file Explorer/Search for vertical space. The right
-          sidebar is back to tab-only content. */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {effectiveTab === 'explorer' && <FileExplorer />}
         {effectiveTab === 'search' && <SearchPanel />}
         {effectiveTab === 'source-control' && <SourceControl />}
         {effectiveTab === 'checks' && <ChecksPanel />}
         {effectiveTab === 'ports' && <PortsPanel />}
+        {/* Phase 6/7 will replace this placeholder with the real RunPanel/SetupPanel. */}
+        {(effectiveTab === 'run' || effectiveTab === 'setup') && (
+          <div className="flex flex-1 items-center justify-center text-muted-foreground text-sm">
+            Coming soon
+          </div>
+        )}
       </div>
     </div>
   )
@@ -383,92 +327,4 @@ function computeMaxRightSidebarWidth(): number {
     return ABSOLUTE_FALLBACK_MAX_WIDTH
   }
   return Math.max(MIN_WIDTH, window.innerWidth - MIN_NON_SIDEBAR_AREA)
-}
-
-// ─── Status indicator dot color mapping ──────
-const STATUS_DOT_COLOR: Record<CheckStatus, string> = {
-  success: 'bg-emerald-500',
-  failure: 'bg-rose-500',
-  pending: 'bg-amber-500',
-  neutral: 'bg-muted-foreground'
-}
-
-// ─── Activity Bar Button (shared for top + side) ──────
-function ActivityBarButton({
-  item,
-  active,
-  onClick,
-  layout,
-  statusIndicator
-}: {
-  item: ActivityBarItem
-  active: boolean
-  onClick: () => void
-  layout: 'top' | 'side'
-  statusIndicator?: CheckStatus | null
-}): React.JSX.Element {
-  const Icon = item.icon
-  const isTop = layout === 'top'
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          className={cn(
-            'relative flex items-center justify-center transition-colors',
-            isTop ? 'h-[36px] w-9' : 'w-10 h-10',
-            active ? 'text-foreground' : 'text-muted-foreground/60 hover:text-muted-foreground'
-          )}
-          onClick={onClick}
-          aria-label={item.shortcut ? `${item.title} (${item.shortcut})` : item.title}
-        >
-          <Icon size={isTop ? 16 : 18} />
-
-          {/* Status indicator dot */}
-          {statusIndicator && statusIndicator !== 'neutral' && (
-            <div
-              className={cn(
-                'absolute rounded-full size-[7px] ring-1 ring-sidebar',
-                isTop ? 'top-[8px] right-[5px]' : 'top-[7px] right-[7px]',
-                STATUS_DOT_COLOR[statusIndicator] ?? 'bg-muted-foreground'
-              )}
-            />
-          )}
-
-          {/* Active indicator */}
-          {active && isTop && (
-            <div className="absolute bottom-0 left-[25%] right-[25%] h-[2px] bg-foreground rounded-t" />
-          )}
-          {active && !isTop && (
-            <div className="absolute right-0 top-[25%] bottom-[25%] w-[2px] bg-foreground rounded-l" />
-          )}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side={isTop ? 'bottom' : 'left'} sideOffset={6}>
-        {item.shortcut ? `${item.title} (${item.shortcut})` : item.title}
-      </TooltipContent>
-    </Tooltip>
-  )
-}
-
-// ─── Context Menu for Activity Bar Position ───────────
-function ActivityBarPositionMenu({
-  currentPosition,
-  onChangePosition
-}: {
-  currentPosition: ActivityBarPosition
-  onChangePosition: (pos: ActivityBarPosition) => void
-}): React.JSX.Element {
-  return (
-    <ContextMenuContent>
-      <ContextMenuLabel>Activity Bar Position</ContextMenuLabel>
-      <ContextMenuRadioGroup
-        value={currentPosition}
-        onValueChange={(v) => onChangePosition(v as ActivityBarPosition)}
-      >
-        <ContextMenuRadioItem value="top">Top</ContextMenuRadioItem>
-        <ContextMenuRadioItem value="side">Side</ContextMenuRadioItem>
-      </ContextMenuRadioGroup>
-    </ContextMenuContent>
-  )
 }
