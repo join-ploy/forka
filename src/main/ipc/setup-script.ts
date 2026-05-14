@@ -134,6 +134,14 @@ async function setupStartLocked(
     return { ok: false, reason: 'repo-not-found' }
   }
 
+  // Why: setup is only valid for worktrees created via `git worktree add`. The
+  // primary working tree's path equals the repo's root path; reject it before
+  // looking up scripts.setup so a configured script can't accidentally run on
+  // the user's primary checkout.
+  if (worktreePath === repo.path) {
+    return { ok: false, reason: 'primary-worktree' }
+  }
+
   const hooks = getEffectiveHooks(repo, worktreePath)
   const script = hooks?.scripts.setup?.trim()
   if (!script) {
