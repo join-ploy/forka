@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ScriptStatus, WorktreeScriptsEntry } from '@/store/slices/scripts'
 
 // Why: the right-sidebar pulls in heavy panel modules (file explorer,
 // search, source control, checks, ports) and the global zustand store;
@@ -33,6 +34,23 @@ vi.mock('./Search', () => ({ default: () => null }))
 vi.mock('./ChecksPanel', () => ({ default: () => null }))
 vi.mock('./PortsPanel', () => ({ default: () => null }))
 
+const IDLE_SCRIPT = {
+  ptyId: null,
+  status: 'idle' as ScriptStatus,
+  exitCode: null,
+  startedAt: null
+}
+
+function scriptsEntry(overrides: {
+  run?: Partial<WorktreeScriptsEntry['run']>
+  setup?: Partial<WorktreeScriptsEntry['setup']>
+}): WorktreeScriptsEntry {
+  return {
+    run: { ...IDLE_SCRIPT, ...overrides.run },
+    setup: { ...IDLE_SCRIPT, ...overrides.setup }
+  }
+}
+
 const ACTIVE_WORKTREE = { id: 'wt-1', repoId: 'repo-1', branch: 'main' }
 const GIT_REPO = { id: 'repo-1', kind: 'git', path: '/tmp/repo' }
 const FOLDER_REPO = { id: 'repo-1', kind: 'folder', path: '/tmp/folder' }
@@ -48,12 +66,24 @@ function baseState(overrides: Partial<StoreState> = {}): StoreState {
     prCache: {},
     sshConnectionStates: new Map(),
     activityBarPosition: 'top',
+    scriptsByWorktree: {} as Record<string, WorktreeScriptsEntry>,
     setRightSidebarTab: () => {},
     setRightSidebarWidth: () => {},
     setActivityBarPosition: () => {},
     toggleRightSidebar: () => {},
     ...overrides
   }
+}
+
+function buttonHtmlFor(markup: string, label: RegExp): string {
+  // Pull the <button …aria-label="…">…</button> element matching `label` so
+  // tests can assert on the dot's classes without depending on document order.
+  const re = new RegExp(`<button[^>]*aria-label="[^"]*${label.source}[^"]*"[^>]*>.*?</button>`)
+  const match = markup.match(re)
+  if (!match) {
+    throw new Error(`button matching ${label} not found in markup`)
+  }
+  return match[0]
 }
 
 beforeEach(() => {
@@ -78,5 +108,87 @@ describe('RightSidebar activity bar — Run/Setup gating', () => {
 
     expect(markup).not.toMatch(/aria-label="Run \(/)
     expect(markup).not.toMatch(/aria-label="Setup"/)
+  })
+})
+
+describe('RightSidebar activity bar — Run/Setup status dots', () => {
+  it('Run dot transitions amber-pulse → emerald → rose with the script status', async () => {
+    const { default: RightSidebar } = await import('./index')
+
+    // idle: no dot
+    mockState = baseState()
+    let html = renderToStaticMarkup(<RightSidebar />)
+    let runBtn = buttonHtmlFor(html, /Run \(/)
+    expect(runBtn).not.toContain('bg-amber-500')
+    expect(runBtn).not.toContain('bg-emerald-500')
+    expect(runBtn).not.toContain('bg-rose-500')
+
+    // running: amber + pulsing
+    mockState = baseState({
+      scriptsByWorktree: { 'wt-1': scriptsEntry({ run: { status: 'running', ptyId: 'p-1' } }) }
+    })
+    html = renderToStaticMarkup(<RightSidebar />)
+    runBtn = buttonHtmlFor(html, /Run \(/)
+    expect(runBtn).toContain('bg-amber-500')
+    expect(runBtn).toContain('animate-pulse')
+
+    // exited-success: emerald, no pulse
+    mockState = baseState({
+      scriptsByWorktree: {
+        'wt-1': scriptsEntry({ run: { status: 'exited-success', exitCode: 0 } })
+      }
+    })
+    html = renderToStaticMarkup(<RightSidebar />)
+    runBtn = buttonHtmlFor(html, /Run \(/)
+    expect(runBtn).toContain('bg-emerald-500')
+    expect(runBtn).not.toContain('animate-pulse')
+
+    // exited-failure: rose, no pulse
+    mockState = baseState({
+      scriptsByWorktree: {
+        'wt-1': scriptsEntry({ run: { status: 'exited-failure', exitCode: 1 } })
+      }
+    })
+    html = renderToStaticMarkup(<RightSidebar />)
+    runBtn = buttonHtmlFor(html, /Run \(/)
+    expect(runBtn).toContain('bg-rose-500')
+    expect(runBtn).not.toContain('animate-pulse')
+  })
+
+  it('Setup dot transitions amber-pulse → emerald → rose with the script status', async () => {
+    const { default: RightSidebar } = await import('./index')
+
+    mockState = baseState()
+    let html = renderToStaticMarkup(<RightSidebar />)
+    let setupBtn = buttonHtmlFor(html, /Setup/)
+    expect(setupBtn).not.toContain('bg-amber-500')
+    expect(setupBtn).not.toContain('bg-emerald-500')
+    expect(setupBtn).not.toContain('bg-rose-500')
+
+    mockState = baseState({
+      scriptsByWorktree: { 'wt-1': scriptsEntry({ setup: { status: 'running', ptyId: 'p-2' } }) }
+    })
+    html = renderToStaticMarkup(<RightSidebar />)
+    setupBtn = buttonHtmlFor(html, /Setup/)
+    expect(setupBtn).toContain('bg-amber-500')
+    expect(setupBtn).toContain('animate-pulse')
+
+    mockState = baseState({
+      scriptsByWorktree: {
+        'wt-1': scriptsEntry({ setup: { status: 'exited-success', exitCode: 0 } })
+      }
+    })
+    html = renderToStaticMarkup(<RightSidebar />)
+    setupBtn = buttonHtmlFor(html, /Setup/)
+    expect(setupBtn).toContain('bg-emerald-500')
+
+    mockState = baseState({
+      scriptsByWorktree: {
+        'wt-1': scriptsEntry({ setup: { status: 'exited-failure', exitCode: 1 } })
+      }
+    })
+    html = renderToStaticMarkup(<RightSidebar />)
+    setupBtn = buttonHtmlFor(html, /Setup/)
+    expect(setupBtn).toContain('bg-rose-500')
   })
 })

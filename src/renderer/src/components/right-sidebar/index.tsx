@@ -14,7 +14,13 @@ import SourceControl from './SourceControl'
 import SearchPanel from './Search'
 import ChecksPanel from './ChecksPanel'
 import PortsPanel from './PortsPanel'
-import { ACTIVITY_ITEMS, ActivityBarButton, ActivityBarPositionMenu } from './activity-bar'
+import {
+  ACTIVITY_ITEMS,
+  ActivityBarButton,
+  ActivityBarPositionMenu,
+  scriptStatusToCheckStatus
+} from './activity-bar'
+import type { ScriptStatus } from '@/store/slices/scripts'
 
 const MIN_WIDTH = 220
 // Why: long file names (e.g. construction drawing sheets, multi-part document
@@ -55,6 +61,17 @@ function getActiveChecksStatus(state: ReturnType<typeof useAppStore.getState>): 
   return state.prCache[prCacheKey]?.data?.checksStatus ?? null
 }
 
+function getActiveScriptStatus(
+  state: ReturnType<typeof useAppStore.getState>,
+  kind: 'run' | 'setup'
+): ScriptStatus {
+  const id = state.activeWorktreeId
+  if (!id) {
+    return 'idle'
+  }
+  return state.scriptsByWorktree[id]?.[kind].status ?? 'idle'
+}
+
 function RightSidebarInner(): React.JSX.Element {
   const activeWorktree = useActiveWorktree()
   const rightSidebarOpen = useAppStore((s) => s.rightSidebarOpen)
@@ -64,6 +81,10 @@ function RightSidebarInner(): React.JSX.Element {
   const setRightSidebarTab = useAppStore((s) => s.setRightSidebarTab)
   const toggleRightSidebar = useAppStore((s) => s.toggleRightSidebar)
   const checksStatus = useAppStore(getActiveChecksStatus)
+  // Why: Run/Setup dots mirror the per-worktree script slice. The selectors
+  // return 'idle' (not null) when no entry exists so the button renders no dot.
+  const runScriptStatus = useAppStore((s) => getActiveScriptStatus(s, 'run'))
+  const setupScriptStatus = useAppStore((s) => getActiveScriptStatus(s, 'setup'))
   const activityBarPosition = useAppStore((s) => s.activityBarPosition)
   const setActivityBarPosition = useAppStore((s) => s.setActivityBarPosition)
   // Why: source control and checks are meaningless for non-git folders.
@@ -193,16 +214,27 @@ function RightSidebarInner(): React.JSX.Element {
     </div>
   )
 
-  const activityBarIcons = visibleItems.map((item) => (
-    <ActivityBarButton
-      key={item.id}
-      item={item}
-      active={effectiveTab === item.id}
-      onClick={() => setRightSidebarTab(item.id)}
-      layout={activityBarPosition}
-      statusIndicator={item.id === 'checks' ? checksStatus : null}
-    />
-  ))
+  const activityBarIcons = visibleItems.map((item) => {
+    const scriptStatus =
+      item.id === 'run' ? runScriptStatus : item.id === 'setup' ? setupScriptStatus : null
+    const indicator =
+      item.id === 'checks'
+        ? checksStatus
+        : scriptStatus
+          ? scriptStatusToCheckStatus(scriptStatus)
+          : null
+    return (
+      <ActivityBarButton
+        key={item.id}
+        item={item}
+        active={effectiveTab === item.id}
+        onClick={() => setRightSidebarTab(item.id)}
+        layout={activityBarPosition}
+        statusIndicator={indicator}
+        statusIndicatorPulse={scriptStatus === 'running'}
+      />
+    )
+  })
 
   const closeButton = rightSidebarOpen ? (
     <Tooltip>

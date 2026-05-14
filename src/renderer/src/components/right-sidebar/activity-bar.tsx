@@ -3,6 +3,7 @@ import { Files, Search, GitBranch, ListChecks, Cable, Play, Wrench } from 'lucid
 import { cn } from '@/lib/utils'
 import type { RightSidebarTab, ActivityBarPosition } from '@/store/slices/editor'
 import type { CheckStatus } from '../../../../shared/types'
+import type { ScriptStatus } from '@/store/slices/scripts'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import {
   ContextMenuContent,
@@ -67,19 +68,41 @@ const STATUS_DOT_COLOR: Record<CheckStatus, string> = {
   neutral: 'bg-muted-foreground'
 }
 
+// Why: Run/Setup share the same dot palette as Checks but reach it through a
+// different state machine (ScriptStatus). 'idle' returns null so no dot
+// renders for never-run / no-script-configured worktrees.
+export function scriptStatusToCheckStatus(status: ScriptStatus): CheckStatus | null {
+  switch (status) {
+    case 'idle':
+      return null
+    case 'running':
+      return 'pending'
+    case 'exited-success':
+      return 'success'
+    case 'exited-failure':
+      return 'failure'
+  }
+}
+
 // ─── Activity Bar Button (shared for top + side) ──────
 export function ActivityBarButton({
   item,
   active,
   onClick,
   layout,
-  statusIndicator
+  statusIndicator,
+  statusIndicatorPulse
 }: {
   item: ActivityBarItem
   active: boolean
   onClick: () => void
   layout: 'top' | 'side'
   statusIndicator?: CheckStatus | null
+  // Why: Run/Setup's 'running' state pulses the dot so a glance can
+  // distinguish "still working" from a settled exit code. Checks reuses the
+  // same palette but never pulses (CI 'pending' is more passive — refresh
+  // cycles, not a live process the user just started).
+  statusIndicatorPulse?: boolean
 }): React.JSX.Element {
   const Icon = item.icon
   const isTop = layout === 'top'
@@ -104,7 +127,8 @@ export function ActivityBarButton({
               className={cn(
                 'absolute rounded-full size-[7px] ring-1 ring-sidebar',
                 isTop ? 'top-[8px] right-[5px]' : 'top-[7px] right-[7px]',
-                STATUS_DOT_COLOR[statusIndicator] ?? 'bg-muted-foreground'
+                STATUS_DOT_COLOR[statusIndicator] ?? 'bg-muted-foreground',
+                statusIndicatorPulse && 'animate-pulse'
               )}
             />
           )}
