@@ -117,6 +117,21 @@ export function getRepositoryPaneSearchEntries(repo: Repo): SettingsSearchEntry[
               'orca.yaml',
               '.orca/issue-command'
             ]
+          },
+          {
+            title: 'Database URL',
+            description:
+              'Per-repo override for the orca.yaml databaseUrl used by Open in Database.',
+            keywords: [
+              repo.displayName,
+              'database',
+              'database url',
+              'databaseUrl',
+              'tableplus',
+              'postgres',
+              'mysql',
+              'connection'
+            ]
           }
         ])
   ]
@@ -147,7 +162,7 @@ export function RepositoryPane({
   }
 
   const updateSelectedRepoHookSettings = (
-    updates: Partial<Pick<RepoHookSettings, 'setupRunPolicy'>>
+    updates: Partial<Pick<RepoHookSettings, 'setupRunPolicy' | 'databaseUrl'>>
   ) => {
     // Why: persisted repos may still carry legacy UI hook fields from the old dual-source
     // design. We preserve them when saving so existing local state stays loadable, but the
@@ -203,7 +218,8 @@ export function RepositoryPane({
       'orca.yaml hooks',
       'Legacy Repo-Local Hooks',
       'When to Run Setup',
-      'Custom GitHub Issue Command'
+      'Custom GitHub Issue Command',
+      'Database URL'
     ].includes(entry.title)
   )
   const symlinkEntries = allEntries.filter((entry) => entry.title === 'Worktree Symlinks')
@@ -326,6 +342,7 @@ export function RepositoryPane({
         onUpdateSetupRunPolicy={(policy) =>
           updateSelectedRepoHookSettings({ setupRunPolicy: policy as SetupRunPolicy })
         }
+        onUpdateDatabaseUrl={(databaseUrl) => updateSelectedRepoHookSettings({ databaseUrl })}
       />
     ) : null
   ].filter(Boolean)

@@ -15,6 +15,7 @@ type RepositoryHooksSectionProps = {
   onCopyTemplate: () => void
   onClearLegacyHooks: () => void
   onUpdateSetupRunPolicy: (policy: SetupRunPolicy) => void
+  onUpdateDatabaseUrl: (databaseUrl: string) => void
 }
 
 type PolicyOption<P> = { policy: P; label: string; description: string }
@@ -152,7 +153,8 @@ export function RepositoryHooksSection({
   copiedTemplate,
   onCopyTemplate,
   onClearLegacyHooks,
-  onUpdateSetupRunPolicy
+  onUpdateSetupRunPolicy,
+  onUpdateDatabaseUrl
 }: RepositoryHooksSectionProps): React.JSX.Element {
   // Why: distinguish "file has unrecognised top-level keys" from "file is
   // genuinely malformed" so users see a helpful update prompt instead of a
@@ -236,6 +238,27 @@ export function RepositoryHooksSection({
       toast.error(message)
     }
   }, [issueCommandDraft, repo.id])
+
+  // Why: the database URL override is a single-line scalar persisted on
+  // RepoHookSettings (not a file like issue-command), so the editor lives on
+  // local state and flushes through `onUpdateDatabaseUrl` on blur. Track the
+  // baseline as the persisted override only — the yaml value is shown as the
+  // placeholder so users can see the shared default without it leaking into
+  // the textbox.
+  const persistedDatabaseUrl = hs?.databaseUrl ?? ''
+  const yamlDatabaseUrl = yamlHooks?.databaseUrl?.trim() ?? ''
+  const [databaseUrlDraft, setDatabaseUrlDraft] = useState(persistedDatabaseUrl)
+  useEffect(() => {
+    setDatabaseUrlDraft(persistedDatabaseUrl)
+  }, [persistedDatabaseUrl, repo.id])
+  const commitDatabaseUrl = useCallback((): void => {
+    const trimmed = databaseUrlDraft.trim()
+    if (trimmed === persistedDatabaseUrl.trim()) {
+      return
+    }
+    setDatabaseUrlDraft(trimmed)
+    onUpdateDatabaseUrl(trimmed)
+  }, [databaseUrlDraft, persistedDatabaseUrl, onUpdateDatabaseUrl])
 
   return (
     <section className="space-y-6">
@@ -418,6 +441,52 @@ export function RepositoryHooksSection({
             {issueCommandSaveError ? (
               <p className="text-xs text-destructive">{issueCommandSaveError}</p>
             ) : null}
+          </div>
+        </div>
+      </SearchableSetting>
+
+      <SearchableSetting
+        title="Database URL"
+        description="Per-repo override for the orca.yaml databaseUrl used by the Open in Database action."
+        keywords={[
+          'database',
+          'database url',
+          'databaseUrl',
+          'tableplus',
+          'postgres',
+          'mysql',
+          'connection'
+        ]}
+      >
+        <div className="space-y-3 rounded-2xl border border-border/50 bg-background/80 p-4 shadow-sm">
+          <div className="space-y-1">
+            <h5 className="text-sm font-semibold">Database URL</h5>
+            <p className="text-xs text-muted-foreground">
+              Connection URL for the context bar&apos;s Open in Database action. This per-repo
+              override is stored locally and takes precedence over the shared value in{' '}
+              <code className="rounded bg-muted px-1 py-0.5">orca.yaml</code>.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <textarea
+              value={databaseUrlDraft}
+              onChange={(e) => setDatabaseUrlDraft(e.target.value)}
+              onBlur={commitDatabaseUrl}
+              placeholder={
+                yamlDatabaseUrl || 'postgresql://postgres:postgres@127.0.0.1/${WORKSPACE_NAME}_dev'
+              }
+              rows={2}
+              className="w-full min-w-0 resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-xs transition-[color,box-shadow] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            />
+            <p className="text-xs text-muted-foreground">
+              Use <code className="rounded bg-muted px-1 py-0.5">{'${WORKSPACE_NAME}'}</code> as the
+              placeholder for the active worktree&apos;s workspace name.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {yamlDatabaseUrl
+                ? 'Leave blank to fall back to the shared `orca.yaml` value shown above.'
+                : 'Leave blank to disable the Open in Database action when no `orca.yaml` value is set.'}
+            </p>
           </div>
         </div>
       </SearchableSetting>
