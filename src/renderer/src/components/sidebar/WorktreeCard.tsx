@@ -529,7 +529,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
               <div className="flex items-baseline gap-1.5 min-w-0">
                 <span
                   className={cn(
-                    'text-[12px] truncate leading-tight text-foreground',
+                    'text-[13px] truncate leading-tight text-foreground',
                     showUnreadEmphasis ? 'font-semibold' : 'font-normal'
                   )}
                 >

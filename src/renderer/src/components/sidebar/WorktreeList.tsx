@@ -152,7 +152,9 @@ const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktreeViewp
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 120,
     overscan: 10,
-    gap: 6,
+    // Why: widened the inter-row gap (was 6) so cards feel breathable without
+    // halving sidebar density. Roughly +33% spacing matches the design ask.
+    gap: 8,
     // Why: tells the virtualizer to start its internal scrollOffset at the
     // ref value rather than 0, so the first getVirtualItems() call after
     // remount picks the correct window of rows. The sibling useLayoutEffect
