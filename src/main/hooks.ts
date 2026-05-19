@@ -24,8 +24,10 @@ function getHookShell(): string | undefined {
 }
 
 /**
- * Parse a simple orca.yaml file. Handles only the supported `scripts:` and
- * `issueCommand:` keys with multiline string values (YAML block scalar `|`).
+ * Parse a simple orca.yaml file. Handles only the supported `scripts:`,
+ * `databaseUrl:`, and `issueCommand:` keys. `scripts:` and `issueCommand:`
+ * accept block scalar `|` multiline values; `databaseUrl:` is a single-line
+ * scalar (the rendered template lives in the context bar's opener dropdown).
  */
 export function parseOrcaYaml(content: string): OrcaHooks | null {
   const hooks: OrcaHooks = { scripts: {} }
@@ -69,6 +71,22 @@ export function parseOrcaYaml(content: string): OrcaHooks | null {
         continue
       }
 
+      if (key === 'databaseUrl') {
+        // Why: single-line scalar — TablePlus URLs are long but never multi-line.
+        // Strip wrapping quotes that users might paste in (TablePlus copy-link
+        // doesn't add them, but `'…'` / `"…"` are valid YAML scalar forms).
+        const raw = stripEmptyQuotedScalar(rest.trim())
+        const unquoted =
+          (raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))
+            ? raw.slice(1, -1)
+            : raw
+        if (unquoted) {
+          hooks.databaseUrl = unquoted
+        }
+        currentSection = null
+        continue
+      }
+
       currentSection = null
       continue
     }
@@ -108,7 +126,13 @@ export function parseOrcaYaml(content: string): OrcaHooks | null {
     hooks.issueCommand = issueCommandValue.trimEnd() || undefined
   }
 
-  if (!hooks.scripts.setup && !hooks.scripts.archive && !hooks.scripts.run && !hooks.issueCommand) {
+  if (
+    !hooks.scripts.setup &&
+    !hooks.scripts.archive &&
+    !hooks.scripts.run &&
+    !hooks.issueCommand &&
+    !hooks.databaseUrl
+  ) {
     return null
   }
   return hooks
@@ -144,7 +168,14 @@ export function parseConductorJson(content: string): OrcaHooks | null {
   if (typeof s.archive === 'string' && s.archive.trim()) {
     out.scripts.archive = s.archive
   }
-  if (!out.scripts.setup && !out.scripts.run && !out.scripts.archive) {
+  // Why: conductor.json users who keep the same db-client connection scheme
+  // can colocate it with their existing scripts block. Mirrors the orca.yaml
+  // top-level `databaseUrl:` key so either config file is a valid source.
+  const databaseUrl = (parsed as { databaseUrl?: unknown }).databaseUrl
+  if (typeof databaseUrl === 'string' && databaseUrl.trim()) {
+    out.databaseUrl = databaseUrl
+  }
+  if (!out.scripts.setup && !out.scripts.run && !out.scripts.archive && !out.databaseUrl) {
     return null
   }
   return out
@@ -204,7 +235,7 @@ export function getActiveHookConfigKind(repoPath: string): 'orca-yaml' | 'conduc
 // return `null` from `parseOrcaYaml` and show a confusing "could not be parsed"
 // error.  Detecting well-formed but unrecognised keys lets the UI suggest an
 // update instead of implying the file is broken.
-const RECOGNIZED_ORCA_YAML_KEYS = new Set(['scripts', 'issueCommand'])
+const RECOGNIZED_ORCA_YAML_KEYS = new Set(['scripts', 'issueCommand', 'databaseUrl'])
 
 /**
  * Return true when `orca.yaml` contains at least one top-level key that this

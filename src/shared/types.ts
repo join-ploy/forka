@@ -843,6 +843,12 @@ export type OrcaHooks = {
     archive?: string // Runs before worktree is archived
     run?: string // User-triggered via Cmd+R
   }
+  /** TablePlus / DB-client connection URL template. ${WORKSPACE_NAME} is
+   *  replaced with the active worktree's workspaceName when the user clicks
+   *  the Database opener in the context bar. Empty/missing means the
+   *  Database option is disabled in the opener dropdown. Example:
+   *  postgresql://postgres:postgres@127.0.0.1/${WORKSPACE_NAME}_server_dev?statusColor=... */
+  databaseUrl?: string
   issueCommand?: string // Shared default command for linked GitHub issues
 }
 

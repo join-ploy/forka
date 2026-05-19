@@ -160,6 +160,51 @@ describe('parseOrcaYaml', () => {
       issueCommand: 'claude -p "Read issue #{{issue}}"'
     })
   })
+
+  it('parses a top-level databaseUrl scalar', () => {
+    const yaml =
+      'databaseUrl: postgresql://postgres:postgres@127.0.0.1/${WORKSPACE_NAME}_server_dev\n'
+    const result = parseOrcaYaml(yaml)
+    expect(result).toEqual({
+      scripts: {},
+      databaseUrl: 'postgresql://postgres:postgres@127.0.0.1/${WORKSPACE_NAME}_server_dev'
+    })
+  })
+
+  it('parses databaseUrl alongside scripts and round-trips both', () => {
+    const yaml = [
+      'scripts:',
+      '  run: pnpm dev',
+      'databaseUrl: postgresql://postgres:postgres@127.0.0.1/${WORKSPACE_NAME}_server_dev?statusColor=F8F8F8'
+    ].join('\n')
+    const result = parseOrcaYaml(yaml)
+    expect(result).toEqual({
+      scripts: { run: 'pnpm dev' },
+      databaseUrl:
+        'postgresql://postgres:postgres@127.0.0.1/${WORKSPACE_NAME}_server_dev?statusColor=F8F8F8'
+    })
+  })
+
+  it('strips wrapping quotes from a databaseUrl scalar', () => {
+    const yaml = `databaseUrl: "postgresql://postgres@127.0.0.1/db"\n`
+    const result = parseOrcaYaml(yaml)
+    expect(result?.databaseUrl).toBe('postgresql://postgres@127.0.0.1/db')
+  })
+
+  it('treats a missing databaseUrl as undefined', () => {
+    const yaml = `scripts:\n  run: pnpm dev\n`
+    const result = parseOrcaYaml(yaml)
+    expect(result?.databaseUrl).toBeUndefined()
+  })
+
+  it('treats an empty databaseUrl scalar as undefined', () => {
+    // Why: a deliberately blank entry should leave the Database opener disabled
+    // rather than dispatching an empty URL — same semantics as the old global
+    // default for an unset template.
+    const yaml = `scripts:\n  run: pnpm dev\ndatabaseUrl: ''\n`
+    const result = parseOrcaYaml(yaml)
+    expect(result?.databaseUrl).toBeUndefined()
+  })
 })
 
 describe('parseConductorJson', () => {
@@ -197,6 +242,37 @@ describe('parseConductorJson', () => {
 
   it('returns null when scripts is not an object', () => {
     expect(parseConductorJson(JSON.stringify({ scripts: 'pnpm dev' }))).toBeNull()
+  })
+
+  it('picks up a top-level databaseUrl alongside scripts', () => {
+    const json = JSON.stringify({
+      scripts: { run: 'npm run dev' },
+      databaseUrl: 'postgresql://postgres@127.0.0.1/${WORKSPACE_NAME}'
+    })
+    const result = parseConductorJson(json)
+    expect(result?.scripts.run).toBe('npm run dev')
+    expect(result?.databaseUrl).toBe('postgresql://postgres@127.0.0.1/${WORKSPACE_NAME}')
+  })
+
+  it('returns hooks with only databaseUrl when scripts block is missing', () => {
+    // Why: a repo can opt in to just the DB opener without authoring any
+    // scripts. Returning non-null keeps the field available to the renderer.
+    const json = JSON.stringify({
+      scripts: {},
+      databaseUrl: 'postgresql://postgres@127.0.0.1/dev'
+    })
+    const result = parseConductorJson(json)
+    expect(result?.databaseUrl).toBe('postgresql://postgres@127.0.0.1/dev')
+    expect(result?.scripts).toEqual({})
+  })
+
+  it('omits databaseUrl when missing or empty', () => {
+    expect(
+      parseConductorJson(JSON.stringify({ scripts: { run: 'x' } }))?.databaseUrl
+    ).toBeUndefined()
+    expect(
+      parseConductorJson(JSON.stringify({ scripts: { run: 'x' }, databaseUrl: '' }))?.databaseUrl
+    ).toBeUndefined()
   })
 })
 
@@ -349,7 +425,7 @@ describe('hasUnrecognizedOrcaYamlKeys', () => {
     const fs = await import('fs')
     vi.mocked(fs.existsSync).mockImplementation((path) => path === '/test/repo/orca.yaml')
     vi.mocked(fs.readFileSync).mockReturnValue(
-      'scripts:\n  setup: |\n    pnpm install\nissueCommand: |\n  claude -p "test"\n'
+      'scripts:\n  setup: |\n    pnpm install\nissueCommand: |\n  claude -p "test"\ndatabaseUrl: postgresql://x\n'
     )
 
     const { hasUnrecognizedOrcaYamlKeys } = await import('./hooks')
