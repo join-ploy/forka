@@ -1,6 +1,8 @@
 import { toast } from 'sonner'
 import { useAppStore } from '@/store'
 import { findWorktreeById } from '@/store/slices/worktree-helpers'
+import { isExplicitAgentStatusFresh } from '@/lib/agent-status'
+import { AGENT_STATUS_STALE_AFTER_MS } from '../../../shared/agent-status-types'
 import type { OrcaHooks, SidebarPromptCommand } from '../../../shared/types'
 
 export type SidebarPromptKind = 'review' | 'createPr'
@@ -79,7 +81,23 @@ export async function invokeSidebarPromptCommand(
     if (activeTab?.contentType === 'terminal') {
       const ptyIds = store.ptyIdsByTabId[activeTab.id] ?? []
       const ptyId = ptyIds[0]
-      if (ptyId) {
+      // Why: only piggyback on the existing terminal when an interactive
+      // coding-CLI we know how to feed (claude or codex) is actively running
+      // in one of its panes. Otherwise the bracketed-paste prompt would
+      // land in a plain shell, which would attempt to execute the prompt
+      // body as a sequence of commands. Other agent types (gemini,
+      // opencode, aider, etc.) aren't yet confirmed to handle bracketed
+      // paste + the PR prompt format cleanly, so we conservatively fall
+      // back to a fresh tab for them too.
+      const tabPrefix = `${activeTab.id}:`
+      const now = Date.now()
+      const hasClaudeOrCodex = Object.values(store.agentStatusByPaneKey).some(
+        (entry) =>
+          entry.paneKey.startsWith(tabPrefix) &&
+          (entry.agentType === 'claude' || entry.agentType === 'codex') &&
+          isExplicitAgentStatusFresh(entry, now, AGENT_STATUS_STALE_AFTER_MS)
+      )
+      if (ptyId && hasClaudeOrCodex) {
         // Why: when injecting into an existing terminal we can't assume the
         // user is at a shell prompt — they may already be inside an
         // interactive CLI like claude/codex/gemini. Pasting `claude "$(cat …)"`
