@@ -546,6 +546,12 @@ function runBackgroundUpdateCheck(
 }
 
 export function checkForUpdates(): void {
+  // Fork disable: see the matching comment in setupAutoUpdater. Skip the
+  // background check entirely. Set ORCA_ENABLE_AUTO_UPDATE=1 to fall
+  // through to the upstream scheduler for local testing.
+  if (process.env.ORCA_ENABLE_AUTO_UPDATE !== '1') {
+    return
+  }
   runBackgroundUpdateCheck()
 }
 
@@ -563,6 +569,16 @@ function enableIncludePrerelease(): void {
 
 /** Menu-triggered check — delegates feedback to renderer toasts via userInitiated flag */
 export function checkForUpdatesFromMenu(options?: { includePrerelease?: boolean }): void {
+  // Fork disable: see the matching comment in setupAutoUpdater. Surface a
+  // friendly "not-available" status so the menu item stays responsive
+  // instead of dispatching against the unconfigured feed. Set
+  // ORCA_ENABLE_AUTO_UPDATE=1 to fall through to the upstream logic for
+  // local testing.
+  if (process.env.ORCA_ENABLE_AUTO_UPDATE !== '1') {
+    sendStatus({ state: 'not-available', userInitiated: true })
+    return
+  }
+
   if (!app.isPackaged || is.dev) {
     sendStatus({ state: 'not-available', userInitiated: true })
     return
@@ -713,6 +729,16 @@ export function setupAutoUpdater(
     // the dev-mode early-return below is temporarily disabled to exercise the
     // update flow locally — point it at the new path up-front so that works.
     autoUpdater.updateConfigPath = path.join(app.getAppPath(), 'config', 'dev-app-update.yml')
+    return
+  }
+  // Fork disable: this fork ships a local-only binary and must NEVER pull
+  // updates from the upstream stablyai/orca GitHub releases. The publish
+  // block in config/electron-builder.config.cjs is also stripped so the
+  // embedded app-update.yml carries no feed URL — this short-circuit is
+  // the second layer of defense for any code path that might call
+  // autoUpdater.checkForUpdates() directly. Set ORCA_ENABLE_AUTO_UPDATE=1
+  // at runtime to re-enable temporarily for testing without a code change.
+  if (process.env.ORCA_ENABLE_AUTO_UPDATE !== '1') {
     return
   }
 

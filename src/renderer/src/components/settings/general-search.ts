@@ -59,14 +59,6 @@ export const GENERAL_CLI_SEARCH_ENTRIES: SettingsSearchEntry[] = [
   }
 ]
 
-export const GENERAL_UPDATE_SEARCH_ENTRIES: SettingsSearchEntry[] = [
-  {
-    title: 'Check for Updates',
-    description: 'Check for app updates and install a newer Orca version.',
-    keywords: ['update', 'version', 'release notes', 'download']
-  }
-]
-
 export const GENERAL_CACHE_TIMER_SEARCH_ENTRIES: SettingsSearchEntry[] = [
   {
     title: 'Prompt Cache Timer',
@@ -122,6 +114,5 @@ export const GENERAL_PANE_SEARCH_ENTRIES: SettingsSearchEntry[] = [
   ...GENERAL_CLI_SEARCH_ENTRIES,
   ...GENERAL_CACHE_TIMER_SEARCH_ENTRIES,
   ...GENERAL_SIDEBAR_PROMPT_SEARCH_ENTRIES,
-  ...GENERAL_UPDATE_SEARCH_ENTRIES,
   ...GENERAL_SUPPORT_SEARCH_ENTRIES
 ]

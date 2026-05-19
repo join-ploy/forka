@@ -183,12 +183,13 @@ module.exports = {
   // packages arm64 binaries into the x64 DMG, causing "posix_spawnp failed"
   // on Intel Macs.
   npmRebuild: true,
-  publish: {
-    provider: 'github',
-    owner: 'stablyai',
-    repo: 'orca',
-    releaseType: 'release'
-  }
+  // Why: fork disable — no publish provider so electron-builder writes an
+  // empty/missing app-update.yml into the packaged binary. Combined with
+  // the runtime short-circuit in src/main/updater.ts:setupAutoUpdater,
+  // this means the packaged app never reaches upstream stablyai/orca's
+  // release feed. Restore the original github provider block to ship
+  // your own updates from a release server.
+  publish: null
 }
 
 async function signMacComputerUseHelper(helperAppPath, packager) {
