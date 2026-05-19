@@ -125,7 +125,7 @@ export type AutomationDispatchResult = {
 
 export type TriggerConfig = { kind: 'manual' }
 
-export type StepKind = 'run-prompt'
+export type StepKind = 'run-prompt' | 'create-worktree' | 'wait-for-setup' | 'run-command'
 
 export type RunPromptConfig = {
   worktreeRef: string
@@ -134,7 +134,31 @@ export type RunPromptConfig = {
   doneDebounceSeconds: number
 }
 
-export type StepConfig = RunPromptConfig
+export type CreateWorktreeConfig = {
+  baseBranch: string // template
+  branchName: string // template
+  displayName: string // template
+  linkLinearIssue: boolean
+}
+
+export type WaitForSetupConfig = {
+  worktreeRef: string // template
+  requireSuccess: boolean
+}
+
+export type RunCommandConfig = {
+  worktreeRef: string // template
+  source: 'review' | 'create-pr' | 'custom'
+  commandId?: string // when source is 'review' | 'create-pr'
+  customCommand?: string // when source is 'custom'
+  captureStdout: boolean
+}
+
+export type StepConfig =
+  | RunPromptConfig
+  | CreateWorktreeConfig
+  | WaitForSetupConfig
+  | RunCommandConfig
 
 export type Step = {
   id: string

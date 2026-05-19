@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { upgradeLegacyAutomation } from './persistence-automation-migration'
-import type { Automation } from '../shared/automations-types'
+import type { Automation, CreateWorktreeConfig, RunPromptConfig } from '../shared/automations-types'
 
 describe('upgradeLegacyAutomation', () => {
   it('returns the input unchanged when trigger + steps are already set', () => {
@@ -85,7 +85,7 @@ describe('upgradeLegacyAutomation', () => {
     ])
   })
 
-  it('handles workspaceMode = new_per_run by leaving worktreeRef as a placeholder', () => {
+  it('upgrades workspaceMode=new_per_run into a 2-step chain (create-worktree → run-prompt)', () => {
     const legacy: Automation = {
       id: 'a3',
       name: 'Legacy new-per-run',
@@ -109,8 +109,26 @@ describe('upgradeLegacyAutomation', () => {
       updatedAt: 0
     }
     const upgraded = upgradeLegacyAutomation(legacy)
-    expect(upgraded.steps?.[0].config).toMatchObject({
-      worktreeRef: '{{automation.workspaceId}}'
+
+    expect(upgraded.steps).toHaveLength(2)
+    expect(upgraded.steps?.[0]).toMatchObject({
+      kind: 'create-worktree',
+      onFailure: 'halt',
+      timeoutSeconds: null
     })
+    expect((upgraded.steps![0].config as CreateWorktreeConfig).baseBranch).toBe('main')
+    expect((upgraded.steps![0].config as CreateWorktreeConfig).linkLinearIssue).toBe(false)
+
+    const createWtId = upgraded.steps![0].id
+    expect(upgraded.steps?.[1]).toMatchObject({
+      kind: 'run-prompt',
+      onFailure: 'halt',
+      timeoutSeconds: null
+    })
+    const promptConfig = upgraded.steps![1].config as RunPromptConfig
+    expect(promptConfig.worktreeRef).toBe(`{{steps.${createWtId}.worktreeId}}`)
+    expect(promptConfig.agentId).toBe('claude')
+    expect(promptConfig.prompt).toBe('Do thing')
+    expect(promptConfig.doneDebounceSeconds).toBe(15)
   })
 })
