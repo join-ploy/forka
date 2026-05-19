@@ -2457,6 +2457,29 @@ const api = {
         callback(request)
       ipcRenderer.on('automations:dispatchRequested', listener)
       return () => ipcRenderer.removeListener('automations:dispatchRequested', listener)
+    },
+    /** Subscribe to per-step prompt-pane requests from the main-process chain
+     *  executor. The renderer should open a tab + launch the agent, then call
+     *  {@link replyOpenPromptPane} with the resulting paneKey. */
+    onOpenPromptPane: (
+      callback: (request: {
+        requestId: string
+        worktreeId: string
+        agentId: string
+        prompt: string
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        request: { requestId: string; worktreeId: string; agentId: string; prompt: string }
+      ) => callback(request)
+      ipcRenderer.on('automations:openPromptPane', listener)
+      return () => ipcRenderer.removeListener('automations:openPromptPane', listener)
+    },
+    /** Send the paneKey back to the main-process chain executor for the
+     *  matching openPromptPane request. */
+    replyOpenPromptPane: (requestId: string, result: { paneKey: string }): void => {
+      ipcRenderer.send(`automations:openPromptPane:reply:${requestId}`, result)
     }
   },
 

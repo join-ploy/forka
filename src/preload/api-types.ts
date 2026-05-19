@@ -1322,6 +1322,15 @@ export type PreloadApi = {
     markDispatchResult: (result: AutomationDispatchResult) => Promise<AutomationRun>
     rendererReady: () => Promise<void>
     onDispatchRequested: (callback: (request: AutomationDispatchRequest) => void) => () => void
+    onOpenPromptPane: (
+      callback: (request: {
+        requestId: string
+        worktreeId: string
+        agentId: string
+        prompt: string
+      }) => void
+    ) => () => void
+    replyOpenPromptPane: (requestId: string, result: { paneKey: string }) => void
   }
   wsl: {
     isAvailable: () => Promise<boolean>
