@@ -651,6 +651,11 @@ export function ResourceUsageStatusSegment({
   const fetchSnapshot = useAppStore((s) => s.fetchMemorySnapshot)
   const workspaceSessionReady = useAppStore((s) => s.workspaceSessionReady)
   const ptyIdsByTabId = useAppStore((s) => s.ptyIdsByTabId)
+  // Why: run/setup script PTYs are tracked here (not in ptyIdsByTabId, which
+  // only covers regular terminal tabs). Without folding their ptyIds into the
+  // "bound" set, the orphan badge would over-count and Kill Orphans would
+  // terminate live script PTYs.
+  const scriptsByWorktree = useAppStore((s) => s.scriptsByWorktree)
   const tabsByWorktree = useAppStore((s) => s.tabsByWorktree)
   const runtimePaneTitlesByTabId = useAppStore((s) => s.runtimePaneTitlesByTabId)
   const setActiveView = useAppStore((s) => s.setActiveView)
@@ -803,6 +808,16 @@ export function ResourceUsageStatusSegment({
         }
       }
     }
+    // Why: run/setup PTYs live outside ptyIdsByTabId so the badge would
+    // otherwise count them as orphans while they're running.
+    for (const entry of Object.values(scriptsByWorktree)) {
+      if (entry?.run.ptyId) {
+        bound.add(entry.run.ptyId)
+      }
+      if (entry?.setup.ptyId) {
+        bound.add(entry.setup.ptyId)
+      }
+    }
     let n = 0
     for (const s of sessions) {
       if (!bound.has(s.id)) {
@@ -810,7 +825,7 @@ export function ResourceUsageStatusSegment({
       }
     }
     return n
-  }, [sessions, ptyIdsByTabId, workspaceSessionReady])
+  }, [sessions, ptyIdsByTabId, scriptsByWorktree, workspaceSessionReady])
 
   const { totalMemory, totalCpu, hostShare, memBadgeLabel } = useMemo(() => {
     const memory = snapshot?.totalMemory ?? 0
@@ -946,6 +961,17 @@ export function ResourceUsageStatusSegment({
         }
       }
     }
+    // Why: run/setup PTYs are tracked per-worktree, not under a tab id, so the
+    // bound set built from ptyIdsByTabId alone would treat them as orphans and
+    // kill the live script. Fold their ptyIds in before filtering.
+    for (const entry of Object.values(scriptsByWorktree)) {
+      if (entry?.run.ptyId) {
+        bound.add(entry.run.ptyId)
+      }
+      if (entry?.setup.ptyId) {
+        bound.add(entry.setup.ptyId)
+      }
+    }
     const orphans = sessions.filter((s) => !bound.has(s.id))
     if (orphans.length === 0) {
       return
@@ -956,7 +982,7 @@ export function ResourceUsageStatusSegment({
     setSessions((prev) => prev.filter((s) => !orphanIds.has(s.id)))
     await Promise.allSettled(orphans.map((s) => window.api.pty.kill(s.id)))
     void refreshSessions()
-  }, [sessions, ptyIdsByTabId, workspaceSessionReady, refreshSessions])
+  }, [sessions, ptyIdsByTabId, scriptsByWorktree, workspaceSessionReady, refreshSessions])
 
   const runKillConfirmed = useCallback(async () => {
     if (!killConfirm) {
