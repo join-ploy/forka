@@ -1481,6 +1481,14 @@ const api = {
       ipcRenderer.invoke('hooks:writeIssueCommand', args)
   },
 
+  prompts: {
+    // Why: writes <label>.md under ~/.orca/prompts and returns the absolute
+    // path. The right-sidebar Review / Create PR dropdowns splice the
+    // returned path into a `$(cat ...)` shell expansion.
+    write: (args: { label: string; body: string }): Promise<string> =>
+      ipcRenderer.invoke('prompts:write', args)
+  },
+
   cache: {
     getGitHub: () => ipcRenderer.invoke('cache:getGitHub'),
     setGitHub: (args: { cache: unknown }) => ipcRenderer.invoke('cache:setGitHub', args)

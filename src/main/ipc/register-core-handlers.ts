@@ -29,6 +29,7 @@ import { registerTelemetryHandlers } from './telemetry'
 import { registerBrowserHandlers } from './browser'
 import { browserSessionRegistry } from '../browser/browser-session-registry'
 import { registerShellHandlers } from './shell'
+import { registerPromptsHandlers } from './prompts'
 import { registerPetHandlers } from './pet'
 import { registerUIHandlers } from './ui'
 import { registerCodexAccountHandlers } from './codex-accounts'
@@ -106,6 +107,7 @@ export function registerCoreHandlers(
   browserSessionRegistry.applyPendingCookieImport()
   browserSessionRegistry.restorePersistedUserAgent()
   registerShellHandlers()
+  registerPromptsHandlers()
   registerPetHandlers()
   registerSessionHandlers(store)
   registerUIHandlers(store)

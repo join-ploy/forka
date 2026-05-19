@@ -889,6 +889,13 @@ export type PreloadApi = {
     }>
     writeIssueCommand: (args: { repoId: string; content: string }) => Promise<void>
   }
+  prompts: {
+    /** Writes `body` to `~/.orca/prompts/<sanitized-label>.md` and returns
+     *  the absolute path so the renderer can splice it into a shell
+     *  `$(cat ...)` expansion. Overwrites any previous payload for the
+     *  same sanitized label. */
+    write: (args: { label: string; body: string }) => Promise<string>
+  }
   cache: {
     getGitHub: () => Promise<{
       pr: Record<string, { data: PRInfo | null; fetchedAt: number }>
