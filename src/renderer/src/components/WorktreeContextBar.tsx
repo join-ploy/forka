@@ -172,7 +172,13 @@ export default function WorktreeContextBar(): React.JSX.Element | null {
               className="flex h-6 min-w-0 cursor-pointer items-center gap-1.5 rounded-sm rounded-r-none border border-r-0 border-border px-2 font-mono text-xs font-medium text-foreground hover:bg-accent"
               style={{ backgroundColor: 'var(--titlebar-background)' }}
             >
-              <FolderOpen className="size-3 shrink-0" />
+              {/* Why: icon mirrors the active opener choice so the button's
+                  glyph matches what clicking it will do. */}
+              {pathOpenerChoice === 'vscode' ? (
+                <Code2 className="size-3 shrink-0" />
+              ) : (
+                <FolderOpen className="size-3 shrink-0" />
+              )}
               <span className="min-w-0 truncate">{worktreePath}</span>
             </button>
             <DropdownMenu>

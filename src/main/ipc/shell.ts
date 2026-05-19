@@ -1,4 +1,5 @@
 import { ipcMain, shell, dialog } from 'electron'
+import { spawn } from 'node:child_process'
 import { constants, copyFile, stat } from 'node:fs/promises'
 import { isAbsolute, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,13 +22,40 @@ export function registerShellHandlers(): void {
     if (!isAbsolute(path)) {
       return
     }
-    // Why: vscode://file/ is registered by the VS Code installer on macOS,
-    // Linux (xdg-open), and Windows; openExternal hands it to the OS, which
-    // no-ops cleanly when VS Code isn't installed. Restricted to absolute
-    // paths so this can't be redirected at arbitrary URL schemes.
-    // encodeURIComponent escapes the path's `/` separators as `%2F`, but the
-    // vscode URL scheme needs literal `/` for the file route — decode them back.
-    await shell.openExternal(`vscode://file/${encodeURIComponent(path).replace(/%2F/gi, '/')}`)
+    // Why: the vscode://file URL scheme is unreliable — VS Code's installer
+    // may not register the handler (especially Homebrew-cask installs and
+    // Insiders), and openExternal silently no-ops when the scheme is
+    // unrouted. `open -a "Visual Studio Code" <path>` on macOS is the
+    // canonical way users open a folder in VS Code from the shell and
+    // works whenever VS Code.app is in /Applications. On other platforms
+    // we fall back to the URL scheme since `open` is macOS-only.
+    if (process.platform === 'darwin') {
+      try {
+        const child = spawn('open', ['-a', 'Visual Studio Code', path], {
+          stdio: 'ignore',
+          detached: true
+        })
+        // Why: detach so the OS owns the spawned process — otherwise it
+        // dies when Orca's main process exits.
+        child.unref()
+        // Why: if `open` itself errors synchronously (rare; usually means
+        // Visual Studio Code.app isn't installed), fall through to the URL
+        // scheme fallback below instead of leaving the user with no signal.
+        await new Promise<void>((resolve) => {
+          child.once('error', () => resolve())
+          // Resolve on spawn since we detached — no exit code to wait for.
+          child.once('spawn', () => resolve())
+        })
+        return
+      } catch {
+        // fall through to the URL scheme fallback
+      }
+    }
+    // Cross-platform fallback: vscode://file/<path>. The double-slash form
+    // (after `file/`) is the canonical absolute-path encoding VS Code
+    // documents. Pass the raw path so VS Code's URL parser handles spaces
+    // and other characters the same way it does for terminal `code` args.
+    await shell.openExternal(`vscode://file${path}`)
   })
 
   ipcMain.handle('shell:openUrl', (_event, rawUrl: string) => {
