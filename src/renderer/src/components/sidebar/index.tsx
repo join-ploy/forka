@@ -44,7 +44,11 @@ function Sidebar(): React.JSX.Element {
     <TooltipProvider delayDuration={400}>
       <div
         ref={containerRef}
-        className="relative min-h-0 flex-shrink-0 bg-sidebar flex flex-col overflow-hidden scrollbar-sleek-parent"
+        // Why: --left-sidebar-background is its own token (separate from the
+        // shared --sidebar token) so the right sidebar and other panels that
+        // rely on bg-sidebar/sidebar-accent keep their existing surface color.
+        style={{ background: 'var(--left-sidebar-background)' }}
+        className="relative min-h-0 flex-shrink-0 flex flex-col overflow-hidden scrollbar-sleek-parent"
       >
         {/* Fixed controls */}
         <SidebarNav />

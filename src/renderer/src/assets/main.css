@@ -114,6 +114,11 @@
   --git-decoration-renamed: #007acc;
   --git-decoration-untracked: #007100;
   --git-decoration-copied: #007acc;
+  /* Why: dedicated chrome tokens for the titlebar and left worktree sidebar so
+     theme tweaks here don't bleed into the right sidebar or other panels that
+     share the broader `--sidebar` token. */
+  --titlebar-background: #1b1917;
+  --left-sidebar-background: #1b1917;
 }
 
 /* ── Dark Mode ───────────────────────────────────────── */
@@ -158,6 +163,8 @@
   --git-decoration-renamed: #73c991;
   --git-decoration-untracked: #73c991;
   --git-decoration-copied: #73c991;
+  --titlebar-background: #1b1917;
+  --left-sidebar-background: #1b1917;
 }
 
 /* ── Base Layer ──────────────────────────────────────── */
@@ -367,7 +374,7 @@
   display: flex;
   flex-direction: row;
   align-items: center;
-  background: var(--bg-titlebar, var(--card));
+  background: var(--titlebar-background);
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
   user-select: none;
@@ -386,7 +393,7 @@
   align-items: center;
   overflow: hidden;
   flex-shrink: 0;
-  background: var(--bg-titlebar, var(--card));
+  background: var(--titlebar-background);
   /* Why: draw the divider via inset shadow instead of border-bottom so the
      flex content area spans the full 36px. With border-bottom + border-box,
      the content area shrinks to 35px and flex-centered controls land at
@@ -672,7 +679,7 @@
 .sidebar {
   width: 240px;
   flex-shrink: 0;
-  background: var(--sidebar);
+  background: var(--left-sidebar-background);
   border-right: 1px solid var(--sidebar-border, var(--border));
   overflow-y: auto;
   overflow-x: hidden;
