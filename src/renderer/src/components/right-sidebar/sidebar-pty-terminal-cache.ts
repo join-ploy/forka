@@ -9,10 +9,14 @@ import {
 import { subscribeToPtyData, subscribeToPtyExit } from '@/components/terminal-pane/pty-dispatcher'
 import type { GlobalSettings } from '../../../../shared/types'
 
-// Why: the gutter around xterm replaces the prior `px-2 pt-2` Tailwind
-// wrapper. Top + side padding only — no bottom — so the cursor row sits
-// flush with the panel base, matching how the regular pane is framed.
-const TERMINAL_GUTTER_CSS = '12px 12px 0 12px'
+// Why: the gutter around xterm — top + sides, no bottom — applied via
+// calc(width) + margin (matching .xterm-container in terminal.css)
+// rather than CSS padding. xterm's child elements use
+// `position: absolute; inset: 0` and so fill the parent's PADDING box,
+// not its content box, which made padding visually leak into overflow.
+// Sizing the inner div itself smaller is the only way to keep xterm
+// strictly inside the gutter regardless of column width.
+const TERMINAL_GUTTER_PX = 12
 
 // Why: the right-sidebar Run/Setup terminals live inside the React tree
 // (RunPanel / SetupPanel), which unmounts whenever the user navigates to
@@ -78,11 +82,18 @@ function buildContainer(): { container: HTMLDivElement; inner: HTMLDivElement } 
   const container = document.createElement('div')
   container.style.width = '100%'
   container.style.height = '100%'
+  // Why: inner is genuinely smaller than the outer container — calc(100% - 2g)
+  // for width and (100% - g) for height (no bottom gutter), then shifted by
+  // margin-left:g + margin-top:g. xterm fills the inner edge-to-edge; the
+  // outer's exposed gutter shares the same theme background color so the
+  // empty band reads as a continuous terminal margin instead of overflow.
   const inner = document.createElement('div')
-  inner.style.width = '100%'
-  inner.style.height = '100%'
-  inner.style.boxSizing = 'border-box'
-  inner.style.padding = TERMINAL_GUTTER_CSS
+  const g = TERMINAL_GUTTER_PX
+  inner.style.position = 'relative'
+  inner.style.width = `calc(100% - ${g * 2}px)`
+  inner.style.height = `calc(100% - ${g}px)`
+  inner.style.marginLeft = `${g}px`
+  inner.style.marginTop = `${g}px`
   container.appendChild(inner)
   return { container, inner }
 }

@@ -378,14 +378,19 @@ describe('sidebar-pty-terminal-cache — gutter background syncing', () => {
     ).toBe('#101820')
   })
 
-  it('applies the gutter padding to the inner wrapper, not the outer container', async () => {
+  it('sizes the inner wrapper smaller than the outer container so xterm fits inside the gutter', async () => {
     const { attachCachedTerminal } = await import('./sidebar-pty-terminal-cache')
     const entry = attachCachedTerminal('pty-A', makeHost(), attachOpts())
-    // Why: padding lives on the inner div so xterm's measurement sees a
-    // smaller box and fits its grid inside the visible canvas area.
-    expect((entry.inner as unknown as { style: { padding: string } }).style.padding).toBe(
-      '8px 8px 0 8px'
-    )
+    // Why: xterm's children use `position: absolute; inset: 0` which fills
+    // the parent's PADDING box, not its content box — so CSS padding leaks
+    // and overflows. Sizing the inner with calc/margin (matching
+    // .xterm-container in terminal.css) is the only reliable way to keep
+    // xterm strictly inside the visible canvas area.
+    const innerStyle = (entry.inner as unknown as { style: Record<string, string> }).style
+    expect(innerStyle.width).toBe('calc(100% - 24px)')
+    expect(innerStyle.height).toBe('calc(100% - 12px)')
+    expect(innerStyle.marginLeft).toBe('12px')
+    expect(innerStyle.marginTop).toBe('12px')
     expect(
       (entry.container as unknown as { style: { padding?: string } }).style.padding
     ).toBeUndefined()
