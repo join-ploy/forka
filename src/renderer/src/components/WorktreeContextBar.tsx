@@ -32,6 +32,7 @@ const externalOpenLabel = isMac
 export default function WorktreeContextBar(): React.JSX.Element | null {
   const activeView = useAppStore((s) => s.activeView)
   const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
+  const rightSidebarOpen = useAppStore((s) => s.rightSidebarOpen)
   const worktree = useWorktreeById(activeWorktreeId)
   const repo = useRepoById(worktree?.repoId ?? null)
   const wrapperRef = useRef<HTMLDivElement | null>(null)
@@ -85,7 +86,20 @@ export default function WorktreeContextBar(): React.JSX.Element | null {
         // OS title chrome is hidden; interactive children opt out via
         // -webkit-app-region: no-drag below. Matches how `.titlebar` works.
         className="worktree-context-bar relative flex h-9 items-center justify-between border-b border-border bg-background pl-3 pr-1.5"
-        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+        style={
+          {
+            WebkitAppRegion: 'drag',
+            // Why: when the right sidebar is closed, App.tsx floats the
+            // open-sidebar toggle button absolutely at the top-right of the
+            // center column (top:0, h-9), and on Windows it's further offset
+            // by var(--window-controls-width) to clear the window-controls
+            // overlay. Reserve matching right-side space here so the toggle
+            // never sits on top of this bar's right cluster.
+            paddingRight: rightSidebarOpen
+              ? undefined
+              : 'calc(var(--window-controls-width, 0px) + 2.5rem)'
+          } as React.CSSProperties
+        }
       >
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden pr-3">
           {/* Why: no GitHub remote → no avatar URL available on the Repo
