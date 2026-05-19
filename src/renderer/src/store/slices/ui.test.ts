@@ -16,10 +16,13 @@ function createUIStore(): StoreApi<AppState> {
   // Only the UI slice, repo ids, and right sidebar width fallback are needed
   // for persisted UI hydration tests. The worktree-nav-history slice is also
   // included because openTaskPage records a Tasks visit via recordViewVisit.
+  // rightSidebarOpen stands in for the editor slice's open/close state so the
+  // hydrate path can flip it without pulling the whole editor slice in.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return createStore<any>()((...args: any[]) => ({
     repos: [],
     rightSidebarWidth: 280,
+    rightSidebarOpen: true,
     ...createWorktreeNavHistorySlice(...(args as Parameters<typeof createWorktreeNavHistorySlice>)),
     ...createUISlice(...(args as Parameters<typeof createUISlice>))
   })) as unknown as StoreApi<AppState>
@@ -114,6 +117,34 @@ describe('createUISlice hydratePersistedUI', () => {
     )
 
     expect(store.getState().hideDefaultBranchWorkspace).toBe(true)
+  })
+
+  it('restores rightSidebarOpen=false from persisted UI state', () => {
+    const store = createUIStore()
+
+    store.getState().hydratePersistedUI(
+      makePersistedUI({
+        rightSidebarOpen: false
+      })
+    )
+
+    expect(store.getState().rightSidebarOpen).toBe(false)
+  })
+
+  it('defaults rightSidebarOpen to true when absent from persisted UI state', () => {
+    // Why: pre-persisted-open users (every existing install before this lands)
+    // have no rightSidebarOpen key on disk. Treat absent as the new default-open
+    // so those users see the sidebar open after upgrade.
+    const store = createUIStore()
+
+    store.setState({ rightSidebarOpen: false })
+    store.getState().hydratePersistedUI(
+      makePersistedUI({
+        rightSidebarOpen: undefined as unknown as boolean
+      })
+    )
+
+    expect(store.getState().rightSidebarOpen).toBe(true)
   })
 
   it('hydrates a valid Kagi session link', () => {

@@ -32,31 +32,34 @@ function createEditorStore(): StoreApi<AppState> {
 }
 
 describe('createEditorSlice right sidebar state', () => {
-  it('right sidebar is closed by default', () => {
+  // Why: open-by-default is the pre-hydration baseline. Persisted UI hydration
+  // can flip it to false if the user has explicitly closed it; absent persisted
+  // value (first launch or upgrade) keeps it open per ui.ts's hydrate path.
+  it('right sidebar is open by default', () => {
     const store = createEditorStore()
-    expect(store.getState().rightSidebarOpen).toBe(false)
-  })
-
-  it('setRightSidebarOpen opens the sidebar', () => {
-    const store = createEditorStore()
-    store.getState().setRightSidebarOpen(true)
     expect(store.getState().rightSidebarOpen).toBe(true)
   })
 
-  it('setRightSidebarOpen(false) after open closes it', () => {
+  it('setRightSidebarOpen(false) closes the sidebar', () => {
     const store = createEditorStore()
-    store.getState().setRightSidebarOpen(true)
     store.getState().setRightSidebarOpen(false)
     expect(store.getState().rightSidebarOpen).toBe(false)
   })
 
+  it('setRightSidebarOpen(true) after close opens it', () => {
+    const store = createEditorStore()
+    store.getState().setRightSidebarOpen(false)
+    store.getState().setRightSidebarOpen(true)
+    expect(store.getState().rightSidebarOpen).toBe(true)
+  })
+
   it('toggleRightSidebar flips the state', () => {
     const store = createEditorStore()
-    expect(store.getState().rightSidebarOpen).toBe(false)
-    store.getState().toggleRightSidebar()
     expect(store.getState().rightSidebarOpen).toBe(true)
     store.getState().toggleRightSidebar()
     expect(store.getState().rightSidebarOpen).toBe(false)
+    store.getState().toggleRightSidebar()
+    expect(store.getState().rightSidebarOpen).toBe(true)
   })
 })
 

@@ -174,6 +174,9 @@ describe('Store', () => {
     expect(ui.lastActiveRepoId).toBeNull()
     expect(ui.dismissedUpdateVersion).toBeNull()
     expect(ui.lastUpdateCheckAt).toBeNull()
+    // Why: open-by-default is the persisted baseline; only an explicit Close
+    // from the user should write a `false` value.
+    expect(ui.rightSidebarOpen).toBe(true)
   })
 
   // ── 2. Load from existing valid file ─────────────────────────────────
