@@ -190,7 +190,6 @@ export async function createRemoteWorktree(
 
   const settings = store.getSettings()
   const requestedName = args.name
-  const sanitizedName = sanitizeWorktreeName(args.name)
   const requestedDisplayName = args.displayName
     ? sanitizeWorktreeDisplayName(args.displayName)
     : undefined
@@ -203,22 +202,39 @@ export async function createRemoteWorktree(
   )
   resolveWorkspaceNameForCreate(args.workspaceName, initialTakenWorkspaceNames)
 
-  // Get git username from remote
-  let username = ''
-  try {
-    const { stdout } = await provider.exec(['config', 'user.name'], repo.path)
-    username = stdout.trim()
-  } catch {
-    /* no username configured */
-  }
+  // Why: the workspaceName slug (e.g. gleeful_kiwi) is the canonical
+  // filesystem/git identifier — already validated as snake_case and unique
+  // per repo by workspace-name-generator. When the caller supplies one,
+  // it becomes BOTH the folder name and the branch name with no prefix,
+  // regardless of branchPrefix settings or linked work items. The
+  // user-visible `name` is cosmetic only (kept as displayName). Legacy
+  // callers (CLI scripts predating the slug feature) that omit
+  // workspaceName fall back to the sanitize-and-prefix flow below.
+  const useSlugMode = typeof args.workspaceName === 'string' && args.workspaceName.length > 0
+  const sanitizedName = useSlugMode
+    ? (args.workspaceName as string)
+    : sanitizeWorktreeName(args.name)
 
-  // Why: only apply the configured branchPrefix when the create is anchored
-  // to a tracked work item (linked issue / PR). Ad-hoc worktrees use the raw
-  // workspace name so the branch matches what the user typed in the picker.
-  const hasLinkedWorkItem = args.linkedIssue !== undefined || args.linkedPR !== undefined
-  const branchName = hasLinkedWorkItem
-    ? computeBranchName(sanitizedName, settings, username)
-    : sanitizedName
+  let branchName: string
+  if (useSlugMode) {
+    branchName = sanitizedName
+  } else {
+    // Get git username from remote
+    let username = ''
+    try {
+      const { stdout } = await provider.exec(['config', 'user.name'], repo.path)
+      username = stdout.trim()
+    } catch {
+      /* no username configured */
+    }
+
+    // Why: legacy CLI path — only apply branchPrefix when anchored to a
+    // tracked work item (preserved from the pre-slug behavior).
+    const hasLinkedWorkItem = args.linkedIssue !== undefined || args.linkedPR !== undefined
+    branchName = hasLinkedWorkItem
+      ? computeBranchName(sanitizedName, settings, username)
+      : sanitizedName
+  }
 
   // Check branch conflict on remote
   try {
@@ -377,7 +393,6 @@ export async function createLocalWorktree(
 
   const username = getGitUsername(repo.path)
   const requestedName = args.name
-  const sanitizedName = sanitizeWorktreeName(args.name)
   const requestedDisplayName = args.displayName
     ? sanitizeWorktreeDisplayName(args.displayName)
     : undefined
@@ -391,6 +406,18 @@ export async function createLocalWorktree(
     store.getAllWorktreeMeta()
   )
   resolveWorkspaceNameForCreate(args.workspaceName, initialTakenWorkspaceNames)
+
+  // Why: when a workspaceName slug is supplied (e.g. gleeful_kiwi), it is the
+  // canonical filesystem/git identifier — already validated as snake_case and
+  // unique per repo by workspace-name-generator. Use it as BOTH the folder
+  // name and the branch name with no prefix, regardless of branchPrefix or
+  // linked work items. The user-visible `name` becomes cosmetic (displayName
+  // only). Legacy callers (CLI scripts predating the slug) that omit
+  // workspaceName fall back to sanitize + suffix + prefix below.
+  const useSlugMode = typeof args.workspaceName === 'string' && args.workspaceName.length > 0
+  const sanitizedName = useSlugMode
+    ? (args.workspaceName as string)
+    : sanitizeWorktreeName(args.name)
 
   // Why (§3.3): determine the base branch (and therefore the remote we need to
   // fetch) FIRST, so the fetch can overlap all pre-create work below. Neither
@@ -465,9 +492,9 @@ export async function createLocalWorktree(
   let effectiveSanitizedName = sanitizedName
   let branchName = ''
   let worktreePath = ''
-  // Why: only apply the configured branchPrefix when the create is anchored
-  // to a tracked work item (linked issue / PR). Ad-hoc worktrees use the raw
-  // workspace name so the branch matches what the user typed in the picker.
+  // Why: legacy CLI path — only apply configured branchPrefix when anchored
+  // to a tracked work item. Slug mode always skips the prefix (the slug IS
+  // the branch name, regardless of linked work items or branchPrefix setting).
   const hasLinkedWorkItem = args.linkedIssue !== undefined || args.linkedPR !== undefined
 
   // Why: silently resolve branch/path/PR name collisions by appending -2/-3/etc.
@@ -489,11 +516,20 @@ export async function createLocalWorktree(
           ? `${requestedName}-${suffix}`
           : effectiveSanitizedName
 
-    branchName = hasLinkedWorkItem
-      ? computeBranchName(effectiveSanitizedName, settings, username)
-      : effectiveSanitizedName
+    branchName =
+      useSlugMode || !hasLinkedWorkItem
+        ? effectiveSanitizedName
+        : computeBranchName(effectiveSanitizedName, settings, username)
     lastBranchConflictKind = await getBranchConflictKind(repo.path, branchName)
     if (lastBranchConflictKind) {
+      // Why: in slug mode the workspaceName slug is the canonical identifier
+      // and is meant to be unique by construction. A git-level collision means
+      // a pre-existing branch matches the slug — desyncing the folder/branch
+      // from the persisted workspaceName by suffixing would silently corrupt
+      // the model, so fail loudly here and let the caller regenerate a slug.
+      if (useSlugMode) {
+        break
+      }
       continue
     }
 
@@ -520,6 +556,13 @@ export async function createLocalWorktree(
       workspaceRoot
     )
     if (existsSync(worktreePath)) {
+      // Why (slug mode): see branch-conflict guard above — don't desync the
+      // folder name from the persisted workspaceName slug. Fall through to
+      // the !resolved branch so the user gets a clear "pick a different
+      // workspaceName" error instead of a silently-suffixed worktree.
+      if (useSlugMode) {
+        break
+      }
       continue
     }
 

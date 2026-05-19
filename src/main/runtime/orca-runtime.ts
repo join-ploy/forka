@@ -3744,6 +3744,11 @@ export class OrcaRuntimeService {
   async createManagedWorktree(args: {
     repoSelector: string
     name: string
+    /** Optional workspaceName slug (e.g. `gleeful_kiwi`). When supplied, the
+     *  slug becomes both the folder name and the branch name with no prefix
+     *  — matching the renderer's create flow. CLI callers that omit it fall
+     *  back to the legacy sanitize-and-prefix behavior. */
+    workspaceName?: string
     baseBranch?: string
     linkedIssue?: number | null
     comment?: string
@@ -3762,15 +3767,24 @@ export class OrcaRuntimeService {
     }
     const settings = this.store.getSettings()
     const requestedName = args.name
-    const sanitizedName = sanitizeWorktreeName(args.name)
+    // Why: when a workspaceName slug is supplied, it is the canonical
+    // filesystem/git identifier — already validated as snake_case and
+    // unique per repo by workspace-name-generator. Use it as BOTH the
+    // folder name and the branch name with no prefix. Legacy callers
+    // that omit it keep the previous sanitize + prefix behavior.
+    const useSlugMode = typeof args.workspaceName === 'string' && args.workspaceName.length > 0
+    const sanitizedName = useSlugMode
+      ? (args.workspaceName as string)
+      : sanitizeWorktreeName(args.name)
     const username = getGitUsername(repo.path)
-    // Why: only apply the configured branchPrefix when the create is anchored
-    // to a tracked work item (linked issue). Ad-hoc worktrees use the raw
-    // workspace name so the branch matches what the user named.
+    // Why: legacy CLI path — only apply configured branchPrefix when the
+    // create is anchored to a tracked work item. Slug mode skips the
+    // prefix entirely (the slug IS the branch name).
     const hasLinkedWorkItem = args.linkedIssue !== null && args.linkedIssue !== undefined
-    const branchName = hasLinkedWorkItem
-      ? computeBranchName(sanitizedName, settings, username)
-      : sanitizedName
+    const branchName =
+      useSlugMode || !hasLinkedWorkItem
+        ? sanitizedName
+        : computeBranchName(sanitizedName, settings, username)
 
     const branchConflictKind = await getBranchConflictKind(repo.path, branchName)
     if (branchConflictKind) {
@@ -3840,11 +3854,12 @@ export class OrcaRuntimeService {
 
     const worktreeId = `${repo.id}::${created.path}`
     const now = Date.now()
-    // Why: CLI/RPC create has no user-facing field to seed the workspace name,
-    // so always generate one from the same adjective_noun pool the IPC path
-    // uses. Match the IPC path's collision avoidance against existing siblings.
+    // Why: when a workspaceName slug was supplied, persist it verbatim so the
+    // meta record matches the branch/folder. Otherwise generate a fresh slug
+    // from the adjective_noun pool (CLI/RPC callers that omit it get the same
+    // collision avoidance as the IPC path).
     const workspaceName = resolveWorkspaceNameForCreate(
-      undefined,
+      args.workspaceName,
       collectTakenWorkspaceNamesForRepo(repo.id, this.store.getAllWorktreeMeta())
     )
     const meta = this.store.setWorktreeMeta(worktreeId, {

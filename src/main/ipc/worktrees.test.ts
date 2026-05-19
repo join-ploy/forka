@@ -430,11 +430,13 @@ describe('registerWorktreeHandlers', () => {
   })
 
   it('persists a caller-supplied workspaceName when valid', async () => {
+    // Why: when a workspaceName slug is provided, the slug becomes the
+    // folder name and the branch name — the display `name` is cosmetic only.
     listWorktreesMock.mockResolvedValue([
       {
-        path: '/workspace/improve-dashboard',
+        path: '/workspace/wise_panther',
         head: 'abc123',
-        branch: 'improve-dashboard',
+        branch: 'wise_panther',
         isBare: false,
         isMainWorktree: false
       }
@@ -447,9 +449,116 @@ describe('registerWorktreeHandlers', () => {
       workspaceName: 'wise_panther'
     })
 
+    expect(addWorktreeMock).toHaveBeenCalledWith(
+      '/workspace/repo',
+      '/workspace/wise_panther',
+      'wise_panther',
+      'origin/main',
+      false
+    )
     expect(store.setWorktreeMeta).toHaveBeenCalledWith(
-      'repo-1::/workspace/improve-dashboard',
+      'repo-1::/workspace/wise_panther',
       expect.objectContaining({ workspaceName: 'wise_panther' })
+    )
+  })
+
+  it('uses the workspaceName slug as folder + branch even when a linked issue is present', async () => {
+    // Why: the workspaceName slug is the canonical filesystem/git identifier.
+    // It must override any branchPrefix setting AND the linkedIssue/linkedPR
+    // gate that previously toggled prefixing on for tracked work items.
+    store.getSettings.mockReturnValue({
+      branchPrefix: 'git-username',
+      nestWorkspaces: false,
+      refreshLocalBaseRefOnWorktreeCreate: false,
+      workspaceDir: '/workspace'
+    })
+    getGitUsernameMock.mockReturnValue('jdoe')
+    listWorktreesMock.mockResolvedValue([
+      {
+        path: '/workspace/gleeful_kiwi',
+        head: 'abc123',
+        branch: 'gleeful_kiwi',
+        isBare: false,
+        isMainWorktree: false
+      }
+    ])
+    store.setWorktreeMeta.mockImplementation((_worktreeId, meta) => meta)
+
+    await handlers['worktrees:create'](null, {
+      repoId: 'repo-1',
+      name: 'Auth Rewrite',
+      workspaceName: 'gleeful_kiwi',
+      linkedIssue: 1234
+    })
+
+    expect(addWorktreeMock).toHaveBeenCalledWith(
+      '/workspace/repo',
+      '/workspace/gleeful_kiwi',
+      'gleeful_kiwi',
+      'origin/main',
+      false
+    )
+    expect(store.setWorktreeMeta).toHaveBeenCalledWith(
+      'repo-1::/workspace/gleeful_kiwi',
+      expect.objectContaining({
+        workspaceName: 'gleeful_kiwi',
+        // displayName preserves the user-visible cosmetic label.
+        displayName: 'Auth Rewrite',
+        linkedIssue: 1234
+      })
+    )
+  })
+
+  it('fails loudly when the workspaceName slug collides with an existing git branch', async () => {
+    // Why: in slug mode the workspaceName is the canonical identifier; we must
+    // not silently suffix the folder/branch to gleeful_kiwi-2 while persisting
+    // gleeful_kiwi as the workspaceName — that would desync the model. Fail
+    // and let the caller regenerate a slug.
+    getBranchConflictKindMock.mockResolvedValue('local')
+
+    await expect(
+      handlers['worktrees:create'](null, {
+        repoId: 'repo-1',
+        name: 'Auth Rewrite',
+        workspaceName: 'gleeful_kiwi'
+      })
+    ).rejects.toThrow(/already exists/i)
+    expect(addWorktreeMock).not.toHaveBeenCalled()
+  })
+
+  it('uses the workspaceName slug as folder + branch with no linked work item', async () => {
+    // Why: the slug path applies regardless of whether a Linear ticket / PR
+    // is linked — the slug always wins over name + prefix.
+    store.getSettings.mockReturnValue({
+      branchPrefix: 'custom',
+      branchPrefixCustom: 'team',
+      nestWorkspaces: false,
+      refreshLocalBaseRefOnWorktreeCreate: false,
+      workspaceDir: '/workspace'
+    })
+    listWorktreesMock.mockResolvedValue([
+      {
+        path: '/workspace/gleeful_kiwi',
+        head: 'abc123',
+        branch: 'gleeful_kiwi',
+        isBare: false,
+        isMainWorktree: false
+      }
+    ])
+    store.setWorktreeMeta.mockImplementation((_worktreeId, meta) => meta)
+
+    await handlers['worktrees:create'](null, {
+      repoId: 'repo-1',
+      name: 'Auth Rewrite',
+      workspaceName: 'gleeful_kiwi'
+    })
+
+    expect(addWorktreeMock).toHaveBeenCalledWith(
+      '/workspace/repo',
+      '/workspace/gleeful_kiwi',
+      'gleeful_kiwi',
+      'origin/main',
+      false
     )
   })
 
