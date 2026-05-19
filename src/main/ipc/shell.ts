@@ -17,6 +17,19 @@ export function registerShellHandlers(): void {
     shell.showItemInFolder(path)
   })
 
+  ipcMain.handle('shell:openVscode', async (_event, path: string) => {
+    if (!isAbsolute(path)) {
+      return
+    }
+    // Why: vscode://file/ is registered by the VS Code installer on macOS,
+    // Linux (xdg-open), and Windows; openExternal hands it to the OS, which
+    // no-ops cleanly when VS Code isn't installed. Restricted to absolute
+    // paths so this can't be redirected at arbitrary URL schemes.
+    // encodeURIComponent escapes the path's `/` separators as `%2F`, but the
+    // vscode URL scheme needs literal `/` for the file route — decode them back.
+    await shell.openExternal(`vscode://file/${encodeURIComponent(path).replace(/%2F/gi, '/')}`)
+  })
+
   ipcMain.handle('shell:openUrl', (_event, rawUrl: string) => {
     let parsed: URL
     try {

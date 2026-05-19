@@ -1126,6 +1126,8 @@ const api = {
   shell: {
     openPath: (path: string): Promise<void> => ipcRenderer.invoke('shell:openPath', path),
 
+    openVscode: (path: string): Promise<void> => ipcRenderer.invoke('shell:openVscode', path),
+
     openUrl: (url: string): Promise<void> => ipcRenderer.invoke('shell:openUrl', url),
 
     openFilePath: (path: string): Promise<void> => ipcRenderer.invoke('shell:openFilePath', path),
