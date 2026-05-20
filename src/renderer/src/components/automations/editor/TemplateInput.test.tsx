@@ -71,4 +71,11 @@ describe('TemplateInput', () => {
     )
     expect(markup).toMatch(/placeholder=["']Base branch["']/)
   })
+
+  it('does not render the popover when the value has no recent {{', () => {
+    const markup = renderToStaticMarkup(
+      <TemplateInput value="hello" onChange={() => {}} available={EMPTY_AVAIL} />
+    )
+    expect(markup).not.toMatch(/role=["']listbox["']/)
+  })
 })

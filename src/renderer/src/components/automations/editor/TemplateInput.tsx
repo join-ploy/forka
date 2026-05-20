@@ -6,6 +6,7 @@ import {
   type AvailableVariables,
   type TemplateError
 } from '../../../lib/template-dry-run'
+import { VariablePickerPopover } from './VariablePickerPopover'
 
 export type TemplateInputProps = {
   value: string
@@ -16,15 +17,14 @@ export type TemplateInputProps = {
   className?: string
   // Optional label for screen readers / form association.
   ariaLabel?: string
-  // Optional callback for picker integration (P5.5 will use it):
-  // fired when the user types '{{' with the caret position info.
-  onPickerOpen?: (anchorEl: HTMLElement | null, caretIndex: number) => void
 }
 
 // Live dry-run-validated template input. Renders an <input> by default,
 // or <textarea> when `multiline` is set. The `{ }` corner icon switches
 // to rose when dryRunTemplate reports any errors so the field draws the
-// eye without having to open a popover. The popover itself lands in P5.5.
+// eye without having to open a popover. Mounts a VariablePickerPopover
+// inline; typing '{{' opens it and selecting a row inserts the path and
+// closing '}}' at the caret.
 export function TemplateInput(props: TemplateInputProps): React.JSX.Element {
   const inputRef = React.useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
   const errors = React.useMemo<TemplateError[]>(
@@ -34,19 +34,38 @@ export function TemplateInput(props: TemplateInputProps): React.JSX.Element {
   const hasError = errors.length > 0
   const firstErrorMessage = hasError ? errors[0].message : undefined
 
-  const { onChange, onPickerOpen } = props
+  const [pickerOpen, setPickerOpen] = React.useState(false)
+  // Caret position immediately after the user typed '{{'. Insertion happens
+  // here so we end up with '{{<path>}}' without disturbing the rest of value.
+  const [caretAt, setCaretAt] = React.useState(0)
+
+  const { onChange } = props
   const handleChange = React.useCallback(
     (e: React.ChangeEvent<HTMLInputElement> | React.ChangeEvent<HTMLTextAreaElement>) => {
       const next = e.target.value
       const caret = e.target.selectionStart ?? next.length
       // The two chars immediately to the left of the caret form '{{' when
       // the user has just typed the opening token — that's the picker cue.
-      if (onPickerOpen && caret >= 2 && next.slice(caret - 2, caret) === '{{') {
-        onPickerOpen(inputRef.current as HTMLElement | null, caret)
+      if (caret >= 2 && next.slice(caret - 2, caret) === '{{') {
+        setCaretAt(caret)
+        setPickerOpen(true)
       }
       onChange(next)
     },
-    [onChange, onPickerOpen]
+    [onChange]
+  )
+
+  const handleSelect = React.useCallback(
+    (path: string) => {
+      // Value currently has '{{' at [caretAt-2, caretAt). We insert
+      // `${path}}}` at caretAt so the result is '{{<path>}}' — leaves the
+      // opening braces the user typed in place and closes the token.
+      const current = props.value
+      const insertion = `${path}}}`
+      const next = current.slice(0, caretAt) + insertion + current.slice(caretAt)
+      onChange(next)
+    },
+    [props.value, caretAt, onChange]
   )
 
   const baseClasses =
@@ -86,6 +105,13 @@ export function TemplateInput(props: TemplateInputProps): React.JSX.Element {
           'pointer-events-none absolute right-1.5 top-1.5 size-3.5',
           hasError ? 'text-rose-500' : 'text-muted-foreground/40'
         )}
+      />
+      <VariablePickerPopover
+        open={pickerOpen}
+        anchor={inputRef.current as HTMLElement | null}
+        available={props.available}
+        onSelect={handleSelect}
+        onClose={() => setPickerOpen(false)}
       />
     </div>
   )
