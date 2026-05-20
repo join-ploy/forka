@@ -25,8 +25,11 @@ import {
   writeIssueCommand
 } from '../hooks'
 import { mergeWorktree, parseWorktreeId } from './worktree-logic'
-import { notifyWorktreesChanged } from './worktree-remote'
-import { createLocalWorktree, createRemoteWorktree } from './worktree-remote'
+import {
+  createLocalWorktree,
+  createRemoteWorktree,
+  notifyWorktreesChanged
+} from './worktree-remote'
 import { registerWorktreeRootsForRepo } from './filesystem-auth'
 import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 import { runWorktreeRemoval } from '../worktree-removal/run-worktree-removal'
