@@ -6,7 +6,8 @@ import type {
   Automation,
   Step,
   StepConfig,
-  StepKind
+  StepKind,
+  TriggerConfig
 } from '../../../../../shared/automations-types'
 import type { Repo, SidebarPromptCommand } from '../../../../../shared/types'
 import {
@@ -27,6 +28,7 @@ import {
 } from './chain-editor-modal-state'
 import { AvailableVariablesPanel } from './AvailableVariablesPanel'
 import { ChainEditorStepCardRouter } from './ChainEditorStepCardRouter'
+import { TriggerPill } from './TriggerPill'
 
 export type ChainEditorModalProps = {
   open: boolean
@@ -201,10 +203,12 @@ function ChainEditorModalBody(props: ChainEditorModalProps): React.JSX.Element {
         projectId={draft.projectId}
         repos={props.repos}
         enabled={draft.enabled}
+        trigger={draft.trigger}
         canRunNow={canRunNow}
         onNameChange={(name) => updateDraft({ name })}
         onProjectChange={(projectId) => updateDraft({ projectId })}
         onEnabledChange={(enabled) => updateDraft({ enabled })}
+        onTriggerChange={(trigger) => updateDraft({ trigger })}
         onRunNow={() => {
           if (props.automation && props.onRunNow) {
             props.onRunNow(props.automation.id)
@@ -258,10 +262,12 @@ type ChainEditorHeaderProps = {
   projectId: string
   repos: Repo[]
   enabled: boolean
+  trigger: TriggerConfig
   canRunNow: boolean
   onNameChange: (name: string) => void
   onProjectChange: (projectId: string) => void
   onEnabledChange: (enabled: boolean) => void
+  onTriggerChange: (trigger: TriggerConfig) => void
   onRunNow: () => void
   onClose: () => void
 }
@@ -299,12 +305,7 @@ function ChainEditorHeader(props: ChainEditorHeaderProps): React.JSX.Element {
         />
         Enabled
       </label>
-      <span
-        aria-label="Trigger"
-        className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-      >
-        Trigger: Manual
-      </span>
+      <TriggerPill trigger={props.trigger} onTriggerChange={props.onTriggerChange} />
       <Button
         variant="outline"
         size="sm"
