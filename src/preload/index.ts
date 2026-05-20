@@ -443,6 +443,12 @@ const api = {
     remove: (args: { worktreeId: string; force?: boolean; skipArchive?: boolean }): Promise<void> =>
       ipcRenderer.invoke('worktrees:remove', args),
 
+    archive: (args: { worktreeId: string }): Promise<void> =>
+      ipcRenderer.invoke('worktrees:archive', args),
+
+    restore: (args: { worktreeId: string }): Promise<void> =>
+      ipcRenderer.invoke('worktrees:restore', args),
+
     updateMeta: (args: {
       worktreeId: string
       updates: Record<string, unknown>

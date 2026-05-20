@@ -24,7 +24,8 @@ import {
   hasUnrecognizedOrcaYamlKeys,
   writeIssueCommand
 } from '../hooks'
-import { mergeWorktree } from './worktree-logic'
+import { mergeWorktree, parseWorktreeId } from './worktree-logic'
+import { notifyWorktreesChanged } from './worktree-remote'
 import { createLocalWorktree, createRemoteWorktree } from './worktree-remote'
 import { registerWorktreeRootsForRepo } from './filesystem-auth'
 import type { OrcaRuntimeService } from '../runtime/orca-runtime'
@@ -92,6 +93,8 @@ export function registerWorktreeHandlers(
   ipcMain.removeHandler('worktrees:create')
   ipcMain.removeHandler('worktrees:resolvePrBase')
   ipcMain.removeHandler('worktrees:remove')
+  ipcMain.removeHandler('worktrees:archive')
+  ipcMain.removeHandler('worktrees:restore')
   ipcMain.removeHandler('worktrees:updateMeta')
   ipcMain.removeHandler('worktrees:persistSortOrder')
   ipcMain.removeHandler('hooks:check')
@@ -388,6 +391,33 @@ export function registerWorktreeHandlers(
       await runWorktreeRemoval(args, { store, runtime, mainWindow })
     }
   )
+
+  ipcMain.handle('worktrees:archive', async (_event, args: { worktreeId: string }) => {
+    const { repoId, worktreePath } = parseWorktreeId(args.worktreeId)
+    // Why: the main worktree IS the repo's working copy — archiving it would
+    // hide the repo with no way to restore. `git worktree list` always emits
+    // the main worktree at the repo root, so equality is the cheapest check.
+    const repo = store.getRepo(repoId)
+    if (repo && repo.path === worktreePath) {
+      throw new Error('Cannot archive the main worktree.')
+    }
+    store.setWorktreeMeta(args.worktreeId, {
+      isArchived: true,
+      archivedAt: Date.now(),
+      archiveCleanupError: null
+    })
+    notifyWorktreesChanged(mainWindow, repoId)
+  })
+
+  ipcMain.handle('worktrees:restore', async (_event, args: { worktreeId: string }) => {
+    const { repoId } = parseWorktreeId(args.worktreeId)
+    store.setWorktreeMeta(args.worktreeId, {
+      isArchived: false,
+      archivedAt: null,
+      archiveCleanupError: null
+    })
+    notifyWorktreesChanged(mainWindow, repoId)
+  })
 
   ipcMain.handle(
     'worktrees:updateMeta',
