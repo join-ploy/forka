@@ -16,6 +16,7 @@ import { openCommandPane } from './open-command-pane'
 import { RunPromptRunner } from './runners/run-prompt-runner'
 import { WaitForSetupRunner } from './runners/wait-for-setup-runner'
 import { RunCommandRunner } from './runners/run-command-runner'
+import { CreateWorktreeRunner, type CreateWorktreeDeps } from './runners/create-worktree-runner'
 import type { StepRunner } from './step-runner'
 
 const DEFAULT_TICK_MS = 60 * 1000
@@ -36,6 +37,12 @@ export type AutomationServiceOpts = {
    *  executor's RunCommandRunner can detect command completion without an
    *  IPC roundtrip. */
   getPtyExit?: (ptyId: string) => PtyExitEntry | undefined
+  /** Bridge from the chain executor's `create-worktree` step to the OrcaRuntime
+   *  managed-worktree create flow. Wired in src/main/index.ts to translate
+   *  the runner's narrow shape onto OrcaRuntimeService.createManagedWorktree.
+   *  Omitting it makes the runner throw a clear error if a chain tries to
+   *  invoke it (unit tests that never exercise `create-worktree` can skip it). */
+  createWorktree?: CreateWorktreeDeps['createWorktree']
   /** Lazy accessor for the renderer process. Resolved at call-time on every
    *  runner tick because the BrowserWindow lifecycle is independent of this
    *  service — capturing a WebContents reference eagerly would let the service
@@ -61,6 +68,7 @@ export class AutomationService {
   private readonly runPromptRunner: RunPromptRunner
   private readonly waitForSetupRunner: WaitForSetupRunner
   private readonly runCommandRunner: RunCommandRunner
+  private readonly createWorktreeRunner: CreateWorktreeRunner
   private readonly chainExecutor: ChainExecutor
 
   constructor(store: Store, opts: AutomationServiceOpts = {}) {
@@ -118,6 +126,22 @@ export class AutomationService {
       now: () => Date.now()
     })
 
+    // Why: when `createWorktree` isn't wired (e.g. service.test.ts harnesses
+    // that never exercise create-worktree steps), surface a clear error if a
+    // chain ever invokes the runner instead of silently passing `undefined`
+    // down to the runtime and producing a confusing TypeError mid-tick.
+    const createWorktreeDep: CreateWorktreeDeps['createWorktree'] =
+      opts.createWorktree ??
+      (() => {
+        throw new Error(
+          'AutomationService: createWorktree dep not wired (cannot run create-worktree steps).'
+        )
+      })
+    this.createWorktreeRunner = new CreateWorktreeRunner({
+      createWorktree: createWorktreeDep,
+      now: () => Date.now()
+    })
+
     this.chainExecutor = new ChainExecutor({
       getRunner: (kind) => this.resolveRunner(kind),
       persistRun: (run) => {
@@ -170,8 +194,15 @@ export class AutomationService {
       const run = this.store.createAutomationRun(automation, Date.now(), 'manual')
       run.status = 'running'
       // Seed the chain context with automation metadata so templates like
-      // `{{automation.workspaceId}}` resolve on the very first tick.
-      run.context = { automation: { workspaceId: automation.workspaceId } }
+      // `{{automation.workspaceId}}` resolve on the very first tick, and so
+      // CreateWorktreeRunner can pick up the target repo from
+      // `context.automation.projectId` (it's the only path it knows to look at).
+      run.context = {
+        automation: {
+          workspaceId: automation.workspaceId,
+          projectId: automation.projectId
+        }
+      }
       run.stepStates = []
       this.store.replaceAutomationRun(run)
       try {
@@ -204,6 +235,9 @@ export class AutomationService {
     }
     if (kind === 'run-command') {
       return this.runCommandRunner
+    }
+    if (kind === 'create-worktree') {
+      return this.createWorktreeRunner
     }
     return undefined
   }

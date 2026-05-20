@@ -557,6 +557,7 @@ app.whenReady().then(async () => {
     // and defeat the teardown helper's prefix sweep (design §4.3 wire-up).
     getLocalProvider: () => getLocalPtyProvider()
   })
+  const runtimeRef = runtime
   automations = new AutomationService(store, {
     // Why: hand the registry's reader to the service so the chain executor
     // can construct RunPromptRunner with main-process status access.
@@ -568,6 +569,32 @@ app.whenReady().then(async () => {
     // Why: hand the PTY exit registry's reader to the service so the chain
     // executor's RunCommandRunner can detect command completion directly.
     getPtyExit: (ptyId) => ptyExitRegistry.get(ptyId),
+    // Why: bridge the chain's narrow create-worktree dep onto the runtime's
+    // wider managed-worktree create API. `runHooks: true` launches the repo's
+    // setup script (which the next `wait-for-setup` step is built to observe);
+    // `activate: false` ensures a chain run doesn't yank the user's focus into
+    // the new worktree (createManagedWorktree maps runHooks=true to
+    // setupDecision='run' internally, so 'inherit' here is a no-op fallback for
+    // when runHooks ever toggles off in a future config). NOTE: the runner's
+    // `linkedIssue` is for Linear; createManagedWorktree's `linkedIssue` field
+    // is a numeric GitHub issue ID — incompatible. Passing `null` until a
+    // Linear-linkage path is added (Phase 4 follow-up).
+    createWorktree: async (input) => {
+      const result = await runtimeRef.createManagedWorktree({
+        repoSelector: input.repoId,
+        name: input.displayName,
+        baseBranch: input.baseBranch,
+        linkedIssue: null,
+        runHooks: true,
+        activate: false,
+        setupDecision: 'inherit'
+      })
+      return {
+        worktreeId: result.worktree.id,
+        path: result.worktree.path,
+        branch: result.worktree.branch
+      }
+    },
     // Why: resolve the renderer + ipc lazily so the RunPromptRunner picks up
     // the current BrowserWindow on each tick (it can change across reload)
     // and so the service stays decoupled from the import-time `electron`
