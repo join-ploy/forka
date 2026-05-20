@@ -328,3 +328,25 @@ Carried into Phase 2 polish (not blocking, surfaced by code reviews):
 - Pre-existing race between `runNow`'s immediate tick and a concurrent periodic `tickRunningChains` — narrow window, but real.
 - Chain executor `tickRunningChains` and `evaluateDueRuns` share the `evaluating` flag, serializing scheduling and chain progress against each other.
 - Tracker cleanup deferred — RunPromptRunner trackers grow per (runId, stepId) without release; pick up in Phase 2 or when fan-out support lands.
+
+- 2026-05-20: Phase 2 (step palette) shipped on branch `bright_robin`. Re-plan begins for Phase 3 (extended schedule trigger).
+
+### Phase 2 deliverables
+
+Step-palette commits (`9a612ee7..e8cf4964`):
+
+- Phase 2 plan (`9a612ee7`)
+- StepKind union + new_per_run migration to 2-step chain (`3ef529e2`)
+- create-worktree runner (`0a661df9`)
+- wait-for-setup runner + SetupScriptRegistry (`a3ce6cd4`)
+- run-command runner + openCommandPane IPC + PtyExitRegistry (`4c58afaa`)
+- create-worktree registered + 3-step chain integration test (`e8cf4964`)
+
+### Phase 2 known follow-ups
+
+Carried into Phase 3+ polish:
+- `run-command` `stdoutTail` capture deferred — required before review-chains can template reviewer output into subsequent prompts. Pick up when run-viewer UI lands (Phase 6).
+- Linear linkage in `create-worktree`: `OrcaRuntimeService.createManagedWorktree` accepts only GitHub `linkedIssue: number | null`. The runner's `linkedIssue.provider === 'linear'` case currently falls back to `null`. Wiring Linear linkage end-to-end is part of Phase 4 (Linear trigger).
+- `baseBranch ?? 'main'` migration default doesn't detect repos on `master` or other defaults. Acceptable for migration; users can edit post-migration.
+- Tracker cleanup deferred — all four runners hold per-(runId, stepId) tracker entries that never release. Pick up when run-level lifecycle hooks land.
+- `runNow` chain-shape seed previously omitted `projectId`; fixed in P2.5 commit `e8cf4964`. Mention as a Phase 1→2 hand-off correction.
