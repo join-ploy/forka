@@ -76,7 +76,7 @@ describe('runWorktreeArchive', () => {
     )
 
     const infoCall = vi.mocked(toast.info).mock.calls[0]
-    const options = infoCall[1] as { action: { onClick: () => void } }
+    const options = infoCall[1] as unknown as { action: { onClick: () => void } }
     options.action.onClick()
     expect(mocks.state.restoreWorktree).toHaveBeenCalledWith('wt-1')
   })

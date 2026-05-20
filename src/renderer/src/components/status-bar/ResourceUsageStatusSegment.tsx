@@ -33,7 +33,7 @@ import { activateAndRevealWorktree } from '@/lib/worktree-activation'
 import { activateTabAndFocusPane } from '@/lib/activate-tab-and-focus-pane'
 import { useAppStore } from '../../store'
 import { useWorktreeMap } from '../../store/selectors'
-import { runWorktreeDelete } from '../sidebar/archive-worktree-flow'
+import { runWorktreeArchive } from '../sidebar/archive-worktree-flow'
 import { runSleepWorktree } from '../sidebar/sleep-worktree-flow'
 import { useDaemonActions, DaemonActionDialog } from '../shared/useDaemonActions'
 import type { AppMemory, UsageValues, Worktree } from '../../../../shared/types'
@@ -491,7 +491,7 @@ function WorktreeRow({
                       type="button"
                       onClick={onDelete}
                       disabled={isMainWorktree}
-                      aria-label={`Delete workspace ${rowLabel}`}
+                      aria-label={`Archive workspace ${rowLabel}`}
                       className={cn(
                         'p-0.5 rounded text-muted-foreground transition-colors',
                         isMainWorktree
@@ -507,7 +507,9 @@ function WorktreeRow({
                     sideOffset={4}
                     className="z-[70] max-w-[200px] text-pretty"
                   >
-                    {isMainWorktree ? 'The main workspace cannot be deleted.' : 'Delete workspace.'}
+                    {isMainWorktree
+                      ? 'The main workspace cannot be archived.'
+                      : 'Archive workspace.'}
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -917,7 +919,7 @@ export function ResourceUsageStatusSegment({
 
   const deleteWorktree = useCallback((worktreeId: string): void => {
     setOpen(false)
-    runWorktreeDelete(worktreeId)
+    runWorktreeArchive(worktreeId)
   }, [])
 
   const handleSleep = useCallback((id: string): void => {
