@@ -2486,6 +2486,30 @@ const api = {
     ): void => {
       ipcRenderer.send(`automations:openPromptPane:reply:${requestId}`, result)
     },
+    /** Subscribe to per-step sendPromptToPane requests from the main-process
+     *  chain executor. The renderer should resolve the paneKey to the first
+     *  live ptyId for that tab and write `prompt + '\n'` so the agent
+     *  receives the submission, then call {@link replySendPromptToPane}. */
+    onSendPromptToPane: (
+      callback: (request: { requestId: string; paneKey: string; prompt: string }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        request: { requestId: string; paneKey: string; prompt: string }
+      ) => callback(request)
+      ipcRenderer.on('automations:sendPromptToPane', listener)
+      return () => ipcRenderer.removeListener('automations:sendPromptToPane', listener)
+    },
+    /** Send a structured reply back to the main-process chain executor for the
+     *  matching sendPromptToPane request. `ok: true` is a bare ack;
+     *  `ok: false` carries a renderer-side reason that the executor surfaces
+     *  as the step's `error` (fail-fast — no retry). */
+    replySendPromptToPane: (
+      requestId: string,
+      result: { ok: true } | { ok: false; error: string }
+    ): void => {
+      ipcRenderer.send(`automations:sendPromptToPane:reply:${requestId}`, result)
+    },
     /** Subscribe to per-step command-pane requests from the main-process chain
      *  executor (RunCommandRunner). The renderer should resolve the configured
      *  SidebarPromptCommand (or use customCommand for source='custom'), spawn

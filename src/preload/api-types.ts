@@ -1334,6 +1334,13 @@ export type PreloadApi = {
       requestId: string,
       result: { ok: true; paneKey: string } | { ok: false; error: string }
     ) => void
+    onSendPromptToPane: (
+      callback: (request: { requestId: string; paneKey: string; prompt: string }) => void
+    ) => () => void
+    replySendPromptToPane: (
+      requestId: string,
+      result: { ok: true } | { ok: false; error: string }
+    ) => void
     onOpenCommandPane: (
       callback: (request: {
         requestId: string
