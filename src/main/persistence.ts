@@ -1577,6 +1577,7 @@ function getDefaultWorktreeMeta(): WorktreeMeta {
     linkedPR: null,
     linkedLinearIssue: null,
     isArchived: false,
+    archivedAt: null,
     isUnread: false,
     isPinned: false,
     sortOrder: Date.now(),
