@@ -1,9 +1,18 @@
 import type { StepRunner, StepRunnerCtx, StepRunnerResult } from '../step-runner'
 import type { RunCommandConfig } from '../../../shared/automations-types'
+import type { AgentStatusEntry } from '../../agent-status/registry'
 import type { PtyExitEntry } from '../../pty/exit-registry'
 import { OpenCommandPaneError } from '../open-command-pane'
+import { SendCommandToPaneError } from '../send-command-to-pane'
 import { resolveTemplate, TemplateResolutionError } from '../template'
 import { OutputTail } from '../output-tail'
+
+/** Debounce window for the agent-done completion path. An agent that briefly
+ *  flips done → working → done shouldn't satisfy the gate on its first idle
+ *  blip; require the done state to hold for this many ms before we treat the
+ *  step as succeeded. Matches the `doneDebounceSeconds` default used by
+ *  run-prompt (5s) so command-launched agents feel symmetric. */
+const AGENT_DONE_DEBOUNCE_MS = 5_000
 
 /** Cap PTY output capture at 32 KiB. Big enough to show a debuggable error
  *  tail; small enough that hundreds of concurrent chain runs can't pile up
@@ -22,11 +31,30 @@ export type RunCommandDeps = {
    *  fn. PTYs in this codebase emit a single merged stream — no stdout/stderr
    *  distinction at the PTY level — so the runner captures one tail. */
   subscribePtyData: (listener: (ptyId: string, data: string) => void) => () => void
+  /** Resolve a Review / Create PR / custom command and write it (with Enter)
+   *  into an existing pane. Used by the `paneRef` branch so a chain step can
+   *  fire a follow-up command into a pane an earlier step opened. */
+  sendCommandToPane?: (params: {
+    paneKey: string
+    source: 'review' | 'create-pr' | 'custom'
+    commandId?: string
+    customCommand?: string
+    worktreeId: string
+  }) => Promise<void>
+  /** Reads the agent-status registry by paneKey. When the launched command is
+   *  an agent (Review / Create PR usually launches Claude/Codex/etc.), the
+   *  PTY stays open after the agent finishes — but the agent-status hook
+   *  flips to `done`, which is the same completion signal run-prompt uses.
+   *  Optional so existing test harnesses that don't wire it keep working. */
+  getAgentStatus?: (paneKey: string) => AgentStatusEntry | undefined
   now: () => number
 }
 
 type Tracker = {
-  ptyId: string
+  /** PTY id when the step spawned its own pane via openCommandPane. Undefined
+   *  in the paneRef branch — we wrote into an existing pane and never owned
+   *  a PTY, so the runner only watches agent-status for completion. */
+  ptyId: string | null
   paneKey: string
   /** Wall-clock when the pane was first opened — anchors the per-step timeout
    *  and is included in the success output so the executor can record run
@@ -39,6 +67,24 @@ type Tracker = {
    *  terminal outcome (done / failed / timed-out). MUST NOT be called on
    *  needs-more-time. */
   unsubscribe: () => void
+  /** True when the tracker was created by reusing an existing pane (paneRef
+   *  branch). The agent was already idle when we wrote into it, so a fresh
+   *  `working` transition is required before any subsequent `done` can
+   *  satisfy the debounce — otherwise the previous turn's lingering `done`
+   *  would let the step succeed before the new command produced any work. */
+  requiresWorkingFirst: boolean
+  /** First-seen `done` timestamp from the agent-status registry. Anchors the
+   *  AGENT_DONE_DEBOUNCE_MS gate so a flicker done → working → done can't
+   *  count as completion. Reset to null whenever the agent flips back to
+   *  `working`. Only relevant when the launched command attaches an agent
+   *  hook; pure-shell commands never populate agent-status and fall through
+   *  to the PTY-exit path. */
+  agentFirstDoneAt: number | null
+  /** Set the first time we observe the agent in the `working` state. Marks
+   *  the boundary where the outputTail is scoped to just the current turn:
+   *  on first `working` we drop accumulated startup/render output so the
+   *  tail surfaced on completion is the agent's response to the prompt. */
+  workingSeen: boolean
 }
 
 export class RunCommandRunner implements StepRunner {
@@ -59,6 +105,7 @@ export class RunCommandRunner implements StepRunner {
     if (!tracker) {
       let worktreeId: string
       let customCommand: string | undefined
+      let resolvedPaneRef = ''
       try {
         worktreeId = resolveTemplate(config.worktreeRef, ctx.context)
         // Why: only the custom-source path carries a free-form command line;
@@ -68,6 +115,9 @@ export class RunCommandRunner implements StepRunner {
           config.source === 'custom' && config.customCommand != null
             ? resolveTemplate(config.customCommand, ctx.context)
             : config.customCommand
+        // Why: paneRef is optional; only resolve when present so chains
+        // without it don't fail on a missing template input.
+        resolvedPaneRef = config.paneRef ? resolveTemplate(config.paneRef, ctx.context) : ''
       } catch (e) {
         // Template resolution errors can never succeed on retry (bad authoring
         // or missing context), so fail-fast instead of looping forever.
@@ -76,6 +126,83 @@ export class RunCommandRunner implements StepRunner {
         }
         throw e
       }
+
+      // paneRef branch: write the command + Enter into an existing pane
+      // instead of spawning a new PTY. Delegated to the renderer because
+      // review/create-pr need the same settings + hooks-preferences
+      // resolution that `openCommandPane` does, and custom commands likewise
+      // run through the same code path for consistency.
+      const paneRef = resolvedPaneRef.trim()
+      if (paneRef.length > 0) {
+        if (config.source === 'custom' && (customCommand ?? '').trim().length === 0) {
+          return {
+            outcome: 'failed',
+            status: 'failed',
+            error: 'run-command with paneRef requires a non-empty customCommand.'
+          }
+        }
+        if (!this.deps.sendCommandToPane) {
+          throw new Error('RunCommandRunner: sendCommandToPane dep not wired.')
+        }
+        // Why: pre-send wait gate — never write into a pane mid-turn. A
+        // `working` agent is still composing/executing, so we hold off until
+        // it returns to `done`. Returning `needs-more-time` (not `failed`)
+        // lets the per-step timeout be the only escape valve. Mirrors the
+        // run-prompt paneRef branch.
+        const preStatus = this.deps.getAgentStatus?.(paneRef)
+        if (preStatus?.state === 'working') {
+          return { outcome: 'needs-more-time', status: 'running' }
+        }
+        if (preStatus?.state === 'blocked' || preStatus?.state === 'waiting') {
+          return {
+            outcome: 'failed',
+            status: 'failed',
+            error: `Agent needs human input (${preStatus.state}). Chain halted.`
+          }
+        }
+        try {
+          await this.deps.sendCommandToPane({
+            paneKey: paneRef,
+            source: config.source,
+            commandId: config.commandId,
+            customCommand,
+            worktreeId
+          })
+        } catch (e) {
+          // Deterministic renderer failure (pane gone, command id unknown,
+          // write rejected) — fail fast. Transient errors re-throw so the
+          // executor retries.
+          if (e instanceof SendCommandToPaneError) {
+            return { outcome: 'failed', status: 'failed', error: e.message }
+          }
+          throw e
+        }
+        // Why: the write delivered the prompt/command to the agent, but the
+        // step isn't complete until the agent processes it and goes idle
+        // again. Create a tracker that polls agent-status (same as the
+        // openCommandPane branch + agent-status flow below) and wait. The
+        // `requiresWorkingFirst` flag prevents the previous turn's `done`
+        // from satisfying the debounce before the agent picks up the new
+        // input.
+        const outputTail = new OutputTail(OUTPUT_TAIL_MAX_BYTES)
+        tracker = {
+          ptyId: null,
+          paneKey: paneRef,
+          openedAt: this.deps.now(),
+          outputTail,
+          unsubscribe: () => {},
+          agentFirstDoneAt: null,
+          workingSeen: false,
+          requiresWorkingFirst: true
+        }
+        if (!runTrackers) {
+          runTrackers = new Map()
+          this.trackers.set(ctx.runId, runTrackers)
+        }
+        runTrackers.set(ctx.step.id, tracker)
+        return { outcome: 'needs-more-time', status: 'running' }
+      }
+
       let ptyId: string
       let paneKey: string
       try {
@@ -113,7 +240,13 @@ export class RunCommandRunner implements StepRunner {
         paneKey,
         openedAt: this.deps.now(),
         outputTail,
-        unsubscribe
+        unsubscribe,
+        agentFirstDoneAt: null,
+        workingSeen: false,
+        // Why: fresh-pane case — the agent boots into `working` on first
+        // input, so the standard done-debounce already covers it. No need
+        // for the requiresWorkingFirst gate that the paneRef branch uses.
+        requiresWorkingFirst: false
       }
       if (!runTrackers) {
         runTrackers = new Map()
@@ -140,33 +273,103 @@ export class RunCommandRunner implements StepRunner {
       }
     }
 
-    const exit = this.deps.getPtyExit(tracker.ptyId)
-
-    if (!exit) {
-      // PTY still running — no exit recorded yet. Keep ticking; the next tick
-      // will look again. Subscription stays live so output accumulates.
-      return { outcome: 'needs-more-time', status: 'running' }
+    // Why: paneRef trackers don't own a PTY (they wrote into someone else's
+    // pane), so PTY exit is meaningless for them — they always rely on the
+    // agent-status `done` path below.
+    const exit = tracker.ptyId !== null ? this.deps.getPtyExit(tracker.ptyId) : undefined
+    if (exit) {
+      // Why: per the chain-engine plan §Step 4, a non-zero exit code is still
+      // `done` (not `failed`) — operators decide via `onFailure` or
+      // downstream prompts whether a non-zero exit halts the chain. The
+      // runner's job is to surface the exit code + outputTail in the step
+      // output, not to interpret them. PTYs emit a single merged stream so
+      // this is one tail, not split stdout/stderr.
+      const output = {
+        exitCode: exit.exitCode,
+        paneKey: tracker.paneKey,
+        durationMs: now - tracker.openedAt,
+        outputTail: tracker.outputTail.read()
+      }
+      this.cleanup(tracker)
+      return {
+        outcome: 'done',
+        status: 'succeeded',
+        output,
+        contextPatch: { steps: { [ctx.step.id]: output } }
+      }
     }
 
-    // Why: per the chain-engine plan §Step 4, a non-zero exit code is still
-    // `done` (not `failed`) — operators decide via `onFailure` or downstream
-    // prompts whether a non-zero exit halts the chain. The runner's job is to
-    // surface the exit code + outputTail in the step output, not to interpret
-    // them. PTYs emit a single merged stream so this is one tail, not split
-    // stdout/stderr.
-    const output = {
-      exitCode: exit.exitCode,
-      paneKey: tracker.paneKey,
-      durationMs: now - tracker.openedAt,
-      outputTail: tracker.outputTail.read()
+    // Why: agent-launching commands (Review / Create PR usually fire Claude,
+    // Codex, etc.) finish their turn but keep the PTY alive — so polling
+    // `getPtyExit` would wait until the step timeout. The agent-status hook
+    // flips to `done` when the agent is idle, mirroring run-prompt's
+    // completion signal. If the registry sees `done` AND a debounce window
+    // has elapsed (so a flicker can't satisfy the gate), succeed the step.
+    // Pure-shell commands never populate agent-status, so this branch is a
+    // no-op for them and PTY exit above remains the only completion path.
+    const agentStatus = this.deps.getAgentStatus?.(tracker.paneKey)
+    if (agentStatus?.state === 'blocked' || agentStatus?.state === 'waiting') {
+      // Same halt semantics as run-prompt's polling branch: can't make
+      // progress when the agent is asking for human input.
+      this.cleanup(tracker)
+      return {
+        outcome: 'failed',
+        status: 'failed',
+        error: `Agent needs human input (${agentStatus.state}). Chain halted.`
+      }
     }
-    this.cleanup(tracker)
-    return {
-      outcome: 'done',
-      status: 'succeeded',
-      output,
-      contextPatch: { steps: { [ctx.step.id]: output } }
+    if (agentStatus?.state === 'working') {
+      // Any work flip after a done ping invalidates the debounce window.
+      tracker.agentFirstDoneAt = null
+      // Why: scope the outputTail to a single agent turn. Without this the
+      // tail accumulates the full pane history (warm-up render, prior
+      // prompts the agent answered, etc.). Clearing on the working
+      // transition means whatever lands in the tail by the time we read it
+      // on `done` is the agent's response to the current prompt.
+      if (!tracker.workingSeen) {
+        tracker.workingSeen = true
+        tracker.outputTail.reset()
+      }
+    } else if (agentStatus?.state === 'done') {
+      // Why: paneRef reuse — the previous turn's `done` was the state when
+      // we wrote into the pane. Wait until the agent picks up the input
+      // (working) at least once before allowing `done` to advance the gate.
+      if (tracker.requiresWorkingFirst && !tracker.workingSeen) {
+        return { outcome: 'needs-more-time', status: 'running' }
+      }
+      if (tracker.agentFirstDoneAt == null) {
+        tracker.agentFirstDoneAt = now
+      } else if (now - tracker.agentFirstDoneAt >= AGENT_DONE_DEBOUNCE_MS) {
+        // Prefer the hook-reported assistant reply (Claude Code's Stop hook,
+        // Codex's prompt_response, OpenCode's message.parts[role=assistant],
+        // …) over the PTY tail — it's the agent's actual response text with
+        // no ANSI/box-drawing noise. Fall back to the captured PTY tail when
+        // no hook carried the field. See run-prompt-runner for the same
+        // pattern.
+        const output = {
+          // Why: no real exit code from a still-open PTY — surface 0 so
+          // downstream templating against `steps.<id>.exitCode` stays
+          // typeable. The agent-status `done` path implies a successful
+          // turn from the agent's perspective.
+          exitCode: 0,
+          paneKey: tracker.paneKey,
+          durationMs: now - tracker.openedAt,
+          outputTail: agentStatus.lastAssistantMessage ?? tracker.outputTail.read()
+        }
+        this.cleanup(tracker)
+        return {
+          outcome: 'done',
+          status: 'succeeded',
+          output,
+          contextPatch: { steps: { [ctx.step.id]: output } }
+        }
+      }
     }
+
+    // No terminal signal yet (PTY still running, agent still working or no
+    // agent attached). Keep ticking; the next tick will look again.
+    // Subscription stays live so output accumulates.
+    return { outcome: 'needs-more-time', status: 'running' }
   }
 
   /** Tear down the PTY data subscription on a terminal outcome. MUST only be
@@ -182,6 +385,35 @@ export class RunCommandRunner implements StepRunner {
       // shouldn't break the step's terminal outcome. Log and move on; the
       // tracker is about to be GC'd anyway.
       console.error('[run-command-runner] unsubscribe threw:', err)
+    }
+  }
+
+  /** Drop every tracker for a run — used on cancel so a subsequent tick
+   *  doesn't keep polling a pane the operator gave up on. */
+  dropRun(runId: string): void {
+    const runTrackers = this.trackers.get(runId)
+    if (!runTrackers) {
+      return
+    }
+    for (const tracker of runTrackers.values()) {
+      this.cleanup(tracker)
+    }
+    this.trackers.delete(runId)
+  }
+
+  /** Drop a single step's tracker — used on retry-from-step so the retried
+   *  step starts fresh while sibling completed steps' downstream context is
+   *  preserved. */
+  dropStep(runId: string, stepId: string): void {
+    const runTrackers = this.trackers.get(runId)
+    const tracker = runTrackers?.get(stepId)
+    if (!tracker) {
+      return
+    }
+    this.cleanup(tracker)
+    runTrackers!.delete(stepId)
+    if (runTrackers!.size === 0) {
+      this.trackers.delete(runId)
     }
   }
 }

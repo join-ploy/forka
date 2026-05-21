@@ -108,7 +108,18 @@ export default function AutomationsPage(): React.JSX.Element {
       void refresh()
     }
     window.addEventListener(AUTOMATIONS_CHANGED_EVENT, onAutomationsChanged)
-    return () => window.removeEventListener(AUTOMATIONS_CHANGED_EVENT, onAutomationsChanged)
+    // Why: chain-shape automations don't go through the legacy dispatch path
+    // that fires AUTOMATIONS_CHANGED_EVENT — instead, main broadcasts
+    // `automations:changed` on every persistRun + run-creation +
+    // finalize-failed. Subscribe so the page reflects step transitions
+    // live without manual refresh.
+    const unsubscribeIpc = window.api.automations.onChanged(() => {
+      void refresh()
+    })
+    return () => {
+      window.removeEventListener(AUTOMATIONS_CHANGED_EVENT, onAutomationsChanged)
+      unsubscribeIpc()
+    }
   }, [refresh])
 
   useEffect(() => {
@@ -189,7 +200,12 @@ export default function AutomationsPage(): React.JSX.Element {
           rrule: automation.rrule,
           dtstart: automation.dtstart,
           enabled: automation.enabled,
-          missedRunGraceMinutes: automation.missedRunGraceMinutes
+          missedRunGraceMinutes: automation.missedRunGraceMinutes,
+          // Why: chain-shape automations live in trigger + steps. Forwarding
+          // them through the create/update payload is what lets the editor save
+          // a brand-new chain — without these the row would round-trip blank.
+          trigger: automation.trigger,
+          steps: automation.steps
         }
         await (existing
           ? window.api.automations.update({ id: existing.id, updates: payload })
@@ -271,7 +287,7 @@ export default function AutomationsPage(): React.JSX.Element {
   // the confirm modal; otherwise dispatch directly.
   const requestRunNow = (automation: Automation): void => {
     const needsPayload =
-      !!automation.trigger?.acceptsLinearTicket || !!automation.trigger?.acceptsWorktreeSelection
+      !!automation.trigger?.acceptsLinearTicket || !!automation.trigger?.acceptsProjectSelection
     if (needsPayload) {
       setConfirmRunFor(automation)
     } else {
@@ -290,6 +306,24 @@ export default function AutomationsPage(): React.JSX.Element {
         store.setActiveTab(run.terminalSessionId)
         store.setActiveTabType('terminal')
       }
+    }
+  }
+
+  const cancelRun = async (run: AutomationRun): Promise<void> => {
+    try {
+      await window.api.automations.cancelRun({ runId: run.id })
+      await refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to stop run.')
+    }
+  }
+
+  const retryRunFromStep = async (run: AutomationRun, stepIndex: number): Promise<void> => {
+    try {
+      await window.api.automations.retryRunFromStep({ runId: run.id, stepIndex })
+      await refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to retry step.')
     }
   }
 
@@ -455,10 +489,30 @@ export default function AutomationsPage(): React.JSX.Element {
               const automationWorktree = automation.workspaceId
                 ? worktreeMap.get(automation.workspaceId)
                 : null
+              // Why: chain-shape automations may not have a fixed project (when
+              // `acceptsProjectSelection` is on) or workspace (each run creates
+              // its own). Hide the project/workspace row entirely when neither
+              // is known, instead of falling through to misleading
+              // "Unknown project / Missing workspace" placeholders.
+              const isChain = Boolean(
+                automation.trigger && automation.steps && automation.steps.length > 0
+              )
               const workspaceLabel =
                 automation.workspaceMode === 'new_per_run'
                   ? 'New workspace each run'
-                  : (automationWorktree?.displayName ?? 'Missing workspace')
+                  : (automationWorktree?.displayName ?? null)
+              const showLocationRow = !isChain || automationRepo !== undefined
+              // Chain automations are manual-only (empty rrule), so there is
+              // no scheduled "next run" to surface. Display "Manual run"
+              // instead of "Next run Never".
+              const scheduleLabel = !automation.enabled
+                ? 'Paused'
+                : isChain || !automation.rrule
+                  ? 'Manual run'
+                  : `Next run ${formatAutomationDateTimeWithRelative(
+                      automation.nextRunAt,
+                      relativeNow
+                    )}`
               return (
                 <ContextMenu key={automation.id}>
                   <ContextMenuTrigger asChild>
@@ -473,27 +527,26 @@ export default function AutomationsPage(): React.JSX.Element {
                       )}
                     >
                       <span className="font-medium">{automation.name}</span>
-                      <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                        {automationRepo ? (
-                          <RepoDotLabel
-                            name={automationRepo.displayName}
-                            color={automationRepo.badgeColor}
-                            dotClassName="size-1.5"
-                          />
-                        ) : (
-                          <span>Unknown project</span>
-                        )}
-                        <span className="shrink-0">/</span>
-                        <span className="truncate">{workspaceLabel}</span>
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {automation.enabled
-                          ? `Next run ${formatAutomationDateTimeWithRelative(
-                              automation.nextRunAt,
-                              relativeNow
-                            )}`
-                          : 'Paused'}
-                      </span>
+                      {showLocationRow ? (
+                        <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                          {automationRepo ? (
+                            <RepoDotLabel
+                              name={automationRepo.displayName}
+                              color={automationRepo.badgeColor}
+                              dotClassName="size-1.5"
+                            />
+                          ) : (
+                            <span>Unknown project</span>
+                          )}
+                          {workspaceLabel ? (
+                            <>
+                              <span className="shrink-0">/</span>
+                              <span className="truncate">{workspaceLabel}</span>
+                            </>
+                          ) : null}
+                        </span>
+                      ) : null}
+                      <span className="text-xs text-muted-foreground">{scheduleLabel}</span>
                     </button>
                   </ContextMenuTrigger>
                   <ContextMenuContent className="w-48">
@@ -549,6 +602,8 @@ export default function AutomationsPage(): React.JSX.Element {
             onEdit={(automation) => void openEditDialog(automation)}
             onToggle={(automation) => void toggleAutomation(automation)}
             onDelete={requestDeleteAutomation}
+            onCancelRun={(run) => void cancelRun(run)}
+            onRetryRunFromStep={(run, stepIndex) => void retryRunFromStep(run, stepIndex)}
           />
         </section>
       </div>

@@ -2464,6 +2464,10 @@ const api = {
     delete: (args: { id: string }): Promise<void> => ipcRenderer.invoke('automations:delete', args),
     runNow: (args: { id: string; payload?: RunNowPayload }): Promise<AutomationRun> =>
       ipcRenderer.invoke('automations:runNow', args),
+    cancelRun: (args: { runId: string }): Promise<AutomationRun | null> =>
+      ipcRenderer.invoke('automations:cancelRun', args),
+    retryRunFromStep: (args: { runId: string; stepIndex: number }): Promise<AutomationRun | null> =>
+      ipcRenderer.invoke('automations:retryRunFromStep', args),
     markDispatchResult: (result: AutomationDispatchResult): Promise<AutomationRun> =>
       ipcRenderer.invoke('automations:markDispatchResult', result),
     rendererReady: (): Promise<void> => ipcRenderer.invoke('automations:rendererReady'),
@@ -2472,6 +2476,16 @@ const api = {
         callback(request)
       ipcRenderer.on('automations:dispatchRequested', listener)
       return () => ipcRenderer.removeListener('automations:dispatchRequested', listener)
+    },
+    /** Subscribe to chain-shape automation run changes broadcast by the
+     *  main-process AutomationService (createAutomationRun, persistRun
+     *  callbacks from the chain executor, finalizeFailedRun). The renderer
+     *  refreshes its run/state caches in response so the UI stays live
+     *  without manual reload. */
+    onChanged: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('automations:changed', listener)
+      return () => ipcRenderer.removeListener('automations:changed', listener)
     },
     /** Subscribe to per-step prompt-pane requests from the main-process chain
      *  executor. The renderer should open a tab + launch the agent, then call
@@ -2482,11 +2496,20 @@ const api = {
         worktreeId: string
         agentId: string
         prompt: string
+        worktreePath?: string
+        connectionId?: string | null
       }) => void
     ): (() => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
-        request: { requestId: string; worktreeId: string; agentId: string; prompt: string }
+        request: {
+          requestId: string
+          worktreeId: string
+          agentId: string
+          prompt: string
+          worktreePath?: string
+          connectionId?: string | null
+        }
       ) => callback(request)
       ipcRenderer.on('automations:openPromptPane', listener)
       return () => ipcRenderer.removeListener('automations:openPromptPane', listener)
@@ -2562,6 +2585,44 @@ const api = {
       result: { ok: true; ptyId: string; paneKey: string } | { ok: false; error: string }
     ): void => {
       ipcRenderer.send(`automations:openCommandPane:reply:${requestId}`, result)
+    },
+    /** Subscribe to per-step sendCommandToPane requests from the main-process
+     *  chain executor (RunCommandRunner with paneRef). The renderer should
+     *  resolve the configured command (settings + hooks preferences), then
+     *  write the resulting command line + Enter into the referenced pane's
+     *  PTY instead of spawning a new one. */
+    onSendCommandToPane: (
+      callback: (request: {
+        requestId: string
+        paneKey: string
+        source: 'review' | 'create-pr' | 'custom'
+        commandId?: string
+        customCommand?: string
+        worktreeId: string
+      }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        request: {
+          requestId: string
+          paneKey: string
+          source: 'review' | 'create-pr' | 'custom'
+          commandId?: string
+          customCommand?: string
+          worktreeId: string
+        }
+      ) => callback(request)
+      ipcRenderer.on('automations:sendCommandToPane', listener)
+      return () => ipcRenderer.removeListener('automations:sendCommandToPane', listener)
+    },
+    /** Reply to a sendCommandToPane request. `ok: true` is a bare ack;
+     *  `ok: false` carries a renderer-side reason that the executor surfaces
+     *  as the step's `error` (fail-fast — no retry). */
+    replySendCommandToPane: (
+      requestId: string,
+      result: { ok: true } | { ok: false; error: string }
+    ): void => {
+      ipcRenderer.send(`automations:sendCommandToPane:reply:${requestId}`, result)
     }
   },
 

@@ -1,5 +1,5 @@
 import React from 'react'
-import { Pencil, Pause, Play, Trash2 } from 'lucide-react'
+import { Pencil, Pause, Play, RotateCcw, Square, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -8,9 +8,15 @@ import { LinearIcon } from '@/components/icons/LinearIcon'
 import type {
   Automation,
   AutomationRun,
+  CreateWorktreeConfig,
   LinearIssuePayload,
+  RunCommandConfig,
+  RunPromptConfig,
+  Step,
   StepRunState,
-  StepRunStatus
+  StepRunStatus,
+  TriggerConfig,
+  WaitForSetupConfig
 } from '../../../../shared/automations-types'
 import type { Worktree } from '../../../../shared/types'
 import { parseAutomationRrule } from '../../../../shared/automation-schedules'
@@ -34,6 +40,8 @@ type AutomationDetailProps = {
   onEdit: (automation: Automation) => void
   onToggle: (automation: Automation) => void
   onDelete: (automation: Automation) => void
+  onCancelRun: (run: AutomationRun) => void
+  onRetryRunFromStep: (run: AutomationRun, stepIndex: number) => void
 }
 
 function DetailMetric({ label, value }: { label: string; value: string }): React.JSX.Element {
@@ -66,6 +74,11 @@ function formatGrace(minutes: number): string {
 }
 
 function formatSchedule(rrule: string): string {
+  // Why: chain-shape automations are manual-only and persist an empty rrule.
+  // parseAutomationRrule throws on that, so short-circuit here.
+  if (!rrule) {
+    return 'Manual'
+  }
   const schedule = parseAutomationRrule(rrule)
   if (schedule.preset === 'hourly') {
     return `Hourly at :${String(schedule.minute).padStart(2, '0')}`
@@ -166,17 +179,140 @@ function LinearIssuePill({
   )
 }
 
-function StepRunRow({ step }: { step: StepRunState }): React.JSX.Element {
+function isChainAutomation(automation: Automation): boolean {
+  return Boolean(automation.trigger && automation.steps && automation.steps.length > 0)
+}
+
+function describeTrigger(trigger: TriggerConfig): string {
+  const inputs: string[] = []
+  if (trigger.acceptsLinearTicket) {
+    inputs.push('Linear ticket')
+  }
+  if (trigger.acceptsProjectSelection) {
+    inputs.push('Project')
+  }
+  if (inputs.length === 0) {
+    return 'Manual'
+  }
+  return `Manual — prompts for ${inputs.join(' + ')} on Run`
+}
+
+const STEP_KIND_LABELS: Record<Step['kind'], string> = {
+  'create-worktree': 'Create worktree',
+  'wait-for-setup': 'Wait for setup',
+  'run-prompt': 'Run prompt',
+  'run-command': 'Run command'
+}
+
+function firstNonEmptyLine(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) {
+    return ''
+  }
+  const line = trimmed.split('\n')[0].trim()
+  return line.length > 120 ? `${line.slice(0, 120)}…` : line
+}
+
+function describeStepConfig(step: Step): string {
+  switch (step.kind) {
+    case 'create-worktree': {
+      const config = step.config as CreateWorktreeConfig
+      const branch = config.branchName.trim() || '(auto)'
+      const base = config.baseBranch.trim() || 'main'
+      return `${branch} from ${base}`
+    }
+    case 'wait-for-setup': {
+      const config = step.config as WaitForSetupConfig
+      return config.requireSuccess ? 'Require success' : 'Allow failure'
+    }
+    case 'run-prompt': {
+      const config = step.config as RunPromptConfig
+      const agentLabel =
+        AGENT_CATALOG.find((agent) => agent.id === config.agentId)?.label ?? config.agentId
+      const promptPreview = firstNonEmptyLine(config.prompt)
+      return promptPreview ? `${agentLabel}: ${promptPreview}` : agentLabel
+    }
+    case 'run-command': {
+      const config = step.config as RunCommandConfig
+      if (config.source === 'review') return 'Review'
+      if (config.source === 'create-pr') return 'Create PR'
+      const custom = (config as RunCommandConfig & { customCommand?: string }).customCommand
+      return firstNonEmptyLine(custom ?? '') || 'Custom command'
+    }
+  }
+}
+
+function ChainStepRow({
+  step,
+  index
+}: {
+  step: Step
+  index: number
+}): React.JSX.Element {
   return (
-    <div className="flex flex-col gap-1 px-3 py-2 text-sm">
-      <div className="flex items-center gap-2">
-        <Badge variant="outline" className={STEP_STATUS_BADGE_CLASS[step.status]}>
-          {step.status}
-        </Badge>
-        <span className="truncate font-mono text-xs text-muted-foreground">{step.stepId}</span>
+    <div className="flex items-start gap-3 px-3 py-2 text-sm">
+      <div className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
+        {index + 1}
       </div>
-      {step.error ? (
-        <div className="ml-1 truncate text-xs text-rose-600 dark:text-rose-400">{step.error}</div>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className="font-medium text-foreground">{STEP_KIND_LABELS[step.kind]}</span>
+          <span className="truncate font-mono text-xs text-muted-foreground">{step.id}</span>
+        </div>
+        <p className="mt-0.5 line-clamp-2 whitespace-pre-wrap text-xs text-muted-foreground">
+          {describeStepConfig(step)}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function StepRunRow({
+  step,
+  onRetry
+}: {
+  step: StepRunState
+  onRetry?: () => void
+}): React.JSX.Element {
+  // Why: retry is only meaningful for terminal states. A `running` or
+  // `pending` step is the active edge of the chain; retrying it would race
+  // the in-flight tick. `succeeded`/`skipped` are valid retry targets too —
+  // operators sometimes want to re-run a successful step against fresh state.
+  const canRetry =
+    onRetry !== undefined && step.status !== 'running' && step.status !== 'pending'
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 text-sm">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className={STEP_STATUS_BADGE_CLASS[step.status]}>
+            {step.status}
+          </Badge>
+          <span className="truncate font-mono text-xs text-muted-foreground">{step.stepId}</span>
+        </div>
+        {step.error ? (
+          <div className="ml-1 truncate text-xs text-rose-600 dark:text-rose-400">{step.error}</div>
+        ) : null}
+      </div>
+      {canRetry ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Retry from this step"
+              onClick={(e) => {
+                e.stopPropagation()
+                onRetry?.()
+              }}
+            >
+              <RotateCcw className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="left" sideOffset={6}>
+            Retry from this step
+          </TooltipContent>
+        </Tooltip>
       ) : null}
     </div>
   )
@@ -226,7 +362,9 @@ export function AutomationDetail({
   onOpenRunWorkspace,
   onEdit,
   onToggle,
-  onDelete
+  onDelete,
+  onCancelRun,
+  onRetryRunFromStep
 }: AutomationDetailProps): React.JSX.Element {
   if (!automation) {
     return (
@@ -235,6 +373,17 @@ export function AutomationDetail({
       </div>
     )
   }
+
+  const isChain = isChainAutomation(automation)
+  const picksProjectAtRunTime = automation.trigger?.acceptsProjectSelection === true
+  // Why: for chain-shape automations, the project/workspace fields don't make
+  // sense as a static header — projects may be picked at run time and each
+  // run creates its own workspace. Show a focused subtitle instead.
+  const subtitle = isChain
+    ? picksProjectAtRunTime
+      ? 'Project picked at Run'
+      : projectName
+    : `${projectName} / ${workspaceName}`
 
   return (
     <div className="flex w-full flex-col gap-4">
@@ -246,9 +395,7 @@ export function AutomationDetail({
               {automation.enabled ? 'Enabled' : 'Paused'}
             </Badge>
           </div>
-          <p className="mt-1 truncate text-sm text-muted-foreground">
-            {projectName} / {workspaceName}
-          </p>
+          <p className="mt-1 truncate text-sm text-muted-foreground">{subtitle}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button variant="secondary" size="sm" onClick={() => onRunNow(automation)}>
@@ -281,73 +428,103 @@ export function AutomationDetail({
         </div>
       ) : null}
 
-      <div className="grid grid-cols-4 gap-6 rounded-md border border-border/50 bg-muted/30 px-4 py-3 shadow-sm">
-        <DetailMetric label="Run location" value={`${projectName} / ${workspaceName}`} />
-        <DetailMetric
-          label="Next run"
-          value={
-            automation.enabled
-              ? formatAutomationDateTimeWithRelative(automation.nextRunAt, now)
-              : 'Paused'
-          }
-        />
-        <DetailMetric
-          label="Last run"
-          value={formatAutomationDateTimeWithRelative(automation.lastRunAt, now)}
-        />
-        <DetailMetric label="Grace" value={formatGrace(automation.missedRunGraceMinutes)} />
-      </div>
-
-      <div className="rounded-md border border-border/50 bg-muted/20 shadow-sm">
-        <div className="border-b border-border/50 px-3 py-2 text-sm font-medium">Configuration</div>
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-x-6 gap-y-4 px-3 py-3">
-          <div className="min-w-0">
-            <div className="text-[11px] font-medium uppercase text-muted-foreground">Agent</div>
-            <div className="mt-1 flex min-w-0 items-center gap-2 text-sm font-medium">
-              <AgentIcon agent={automation.agentId} size={16} />
-              <span className="truncate">
-                {AGENT_CATALOG.find((agent) => agent.id === automation.agentId)?.label ??
-                  automation.agentId}
-              </span>
+      {isChain ? (
+        <>
+          <div className="rounded-md border border-border/50 bg-muted/20 px-4 py-3 shadow-sm">
+            <div className="text-[11px] font-medium uppercase text-muted-foreground">Trigger</div>
+            <div className="mt-1 text-sm font-medium">{describeTrigger(automation.trigger!)}</div>
+          </div>
+          <div className="rounded-md border border-border/50 bg-muted/20 shadow-sm">
+            <div className="flex items-center justify-between border-b border-border/50 px-3 py-2">
+              <div className="text-sm font-medium">Steps</div>
+              <div className="text-xs text-muted-foreground">
+                {automation.steps!.length} {automation.steps!.length === 1 ? 'step' : 'steps'}
+              </div>
+            </div>
+            <div className="divide-y divide-border/50">
+              {automation.steps!.map((step, index) => (
+                <ChainStepRow key={step.id} step={step} index={index} />
+              ))}
             </div>
           </div>
-          <DetailMetric label="Schedule" value={formatSchedule(automation.rrule)} />
-          <DetailMetric
-            label={automation.workspaceMode === 'new_per_run' ? 'Create from' : 'Workspace'}
-            value={
-              automation.workspaceMode === 'new_per_run'
-                ? (automation.baseBranch ?? projectDefaultBaseRef ?? 'Project default')
-                : workspaceName
-            }
-          />
-          <div className="min-w-0">
-            <div className="text-[11px] font-medium uppercase text-muted-foreground">Prompt</div>
-            <p className="mt-1 line-clamp-4 whitespace-pre-wrap text-sm text-foreground">
-              {automation.prompt}
-            </p>
+        </>
+      ) : (
+        <>
+          <div className="grid grid-cols-4 gap-6 rounded-md border border-border/50 bg-muted/30 px-4 py-3 shadow-sm">
+            <DetailMetric label="Run location" value={`${projectName} / ${workspaceName}`} />
+            <DetailMetric
+              label="Next run"
+              value={
+                automation.enabled
+                  ? formatAutomationDateTimeWithRelative(automation.nextRunAt, now)
+                  : 'Paused'
+              }
+            />
+            <DetailMetric
+              label="Last run"
+              value={formatAutomationDateTimeWithRelative(automation.lastRunAt, now)}
+            />
+            <DetailMetric label="Grace" value={formatGrace(automation.missedRunGraceMinutes)} />
           </div>
-        </div>
-      </div>
+
+          <div className="rounded-md border border-border/50 bg-muted/20 shadow-sm">
+            <div className="border-b border-border/50 px-3 py-2 text-sm font-medium">
+              Configuration
+            </div>
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-x-6 gap-y-4 px-3 py-3">
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium uppercase text-muted-foreground">Agent</div>
+                <div className="mt-1 flex min-w-0 items-center gap-2 text-sm font-medium">
+                  <AgentIcon agent={automation.agentId} size={16} />
+                  <span className="truncate">
+                    {AGENT_CATALOG.find((agent) => agent.id === automation.agentId)?.label ??
+                      automation.agentId}
+                  </span>
+                </div>
+              </div>
+              <DetailMetric label="Schedule" value={formatSchedule(automation.rrule)} />
+              <DetailMetric
+                label={automation.workspaceMode === 'new_per_run' ? 'Create from' : 'Workspace'}
+                value={
+                  automation.workspaceMode === 'new_per_run'
+                    ? (automation.baseBranch ?? projectDefaultBaseRef ?? 'Project default')
+                    : workspaceName
+                }
+              />
+              <div className="min-w-0">
+                <div className="text-[11px] font-medium uppercase text-muted-foreground">Prompt</div>
+                <p className="mt-1 line-clamp-4 whitespace-pre-wrap text-sm text-foreground">
+                  {automation.prompt}
+                </p>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
 
       <div className="rounded-md border border-border/50 bg-muted/20 shadow-sm">
         <div className="flex items-center justify-between border-b border-border/50 px-3 py-2">
           <div className="text-sm font-medium">Run history</div>
           <div className="text-xs text-muted-foreground">{runs.length} runs</div>
         </div>
-        <div className="grid grid-cols-[minmax(10rem,1fr)_minmax(12rem,1.4fr)_minmax(6rem,auto)] gap-3 border-b border-border/50 px-3 py-1.5 text-[11px] font-medium uppercase text-muted-foreground">
+        <div className="grid grid-cols-[minmax(10rem,1fr)_minmax(6rem,auto)_2rem] gap-3 border-b border-border/50 px-3 py-1.5 text-[11px] font-medium uppercase text-muted-foreground">
           <div>Run</div>
-          <div>Workspace</div>
           <div>Status</div>
+          <div />
         </div>
         <div className="divide-y divide-border/50">
           {runs.map((run) => {
             const runWorktree = run.workspaceId ? (worktreeMap.get(run.workspaceId) ?? null) : null
-            const workspaceLabel = run.workspaceId
-              ? (runWorktree?.displayName ?? 'Missing workspace')
-              : 'Not launched'
             const linearIssue = extractLinearIssue(run.context)
+            // Why: in-flight statuses are the only ones a Stop button can act
+            // on. Terminal rows show an empty action slot so the grid stays
+            // aligned without an enabled-but-pointless button.
+            const isInFlight =
+              run.status === 'running' ||
+              run.status === 'pending' ||
+              run.status === 'dispatching'
             const rowClassName =
-              'grid grid-cols-[minmax(10rem,1fr)_minmax(12rem,1.4fr)_minmax(6rem,auto)] items-center gap-3 px-3 py-2 text-left text-sm outline-none transition-colors'
+              'grid grid-cols-[minmax(10rem,1fr)_minmax(6rem,auto)_2rem] items-center gap-3 px-3 py-2 text-left text-sm outline-none transition-colors'
             const rowContent = (
               <>
                 <div className="min-w-0">
@@ -359,19 +536,34 @@ export function AutomationDetail({
                     <div className="mt-1 truncate text-xs text-muted-foreground">{run.error}</div>
                   ) : null}
                 </div>
-                <div
-                  className={
-                    runWorktree
-                      ? 'min-w-0 truncate text-foreground'
-                      : 'min-w-0 truncate text-muted-foreground'
-                  }
-                >
-                  {workspaceLabel}
-                </div>
                 <div className="flex justify-start">
                   <Badge variant={getAutomationRunStatusVariant(run.status)}>
                     {getAutomationRunStatusLabel(run.status)}
                   </Badge>
+                </div>
+                <div className="flex justify-end">
+                  {isInFlight ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label="Stop run"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onCancelRun(run)
+                          }}
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          <Square className="size-3.5" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="left" sideOffset={6}>
+                        Stop run
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : null}
                 </div>
               </>
             )
@@ -381,8 +573,12 @@ export function AutomationDetail({
             // single-row rendering untouched.
             const stepList = hasStepStates ? (
               <div className="flex flex-col gap-0 border-t border-border/50 bg-background/60 py-1">
-                {run.stepStates!.map((step) => (
-                  <StepRunRow key={step.stepId} step={step} />
+                {run.stepStates!.map((step, index) => (
+                  <StepRunRow
+                    key={step.stepId}
+                    step={step}
+                    onRetry={() => onRetryRunFromStep(run, index)}
+                  />
                 ))}
               </div>
             ) : null

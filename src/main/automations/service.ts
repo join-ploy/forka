@@ -15,11 +15,13 @@ import { ChainExecutor } from './chain-executor'
 import { openPromptPane } from './open-prompt-pane'
 import { sendPromptToPane } from './send-prompt-to-pane'
 import { openCommandPane } from './open-command-pane'
+import { sendCommandToPane } from './send-command-to-pane'
 import { RunPromptRunner } from './runners/run-prompt-runner'
 import { WaitForSetupRunner } from './runners/wait-for-setup-runner'
 import { RunCommandRunner } from './runners/run-command-runner'
 import { CreateWorktreeRunner, type CreateWorktreeDeps } from './runners/create-worktree-runner'
 import type { StepRunner } from './step-runner'
+import { splitWorktreeId } from '../../shared/worktree-id'
 
 const DEFAULT_TICK_MS = 60 * 1000
 
@@ -45,6 +47,11 @@ export type AutomationServiceOpts = {
    *  without going through the renderer round-trip. Returns an unsubscribe
    *  function the runner calls on terminal outcomes. */
   subscribePtyData?: (listener: (ptyId: string, data: string) => void) => () => void
+  /** Resolve a paneKey to its current ptyId. Wired from
+   *  `getPtyIdForPaneKey` in `./ipc/pty` so RunPromptRunner can subscribe to
+   *  the prompt pane's data stream and capture the agent's last-turn output
+   *  for templating downstream. */
+  getPtyIdForPaneKey?: (paneKey: string) => string | undefined
   /** Bridge from the chain executor's `create-worktree` step to the OrcaRuntime
    *  managed-worktree create flow. Wired in src/main/index.ts to translate
    *  the runner's narrow shape onto OrcaRuntimeService.createManagedWorktree.
@@ -68,12 +75,21 @@ export class AutomationService {
   private readonly getSetupScript: (worktreeId: string) => SetupScriptEntry | undefined
   private readonly getPtyExit: (ptyId: string) => PtyExitEntry | undefined
   private readonly subscribePtyData: (listener: (ptyId: string, data: string) => void) => () => void
+  private readonly getPtyIdForPaneKey: (paneKey: string) => string | undefined
   private readonly getWebContents: () => WebContents | null
   private readonly getIpcMain: (() => IpcMain) | null
   private timer: ReturnType<typeof setInterval> | null = null
   private webContents: WebContents | null = null
   private rendererReady = false
   private evaluating = false
+  /** Runs whose chain executor tick is currently in flight. The scheduler
+   *  loop skips them so a fire-and-forget tick from `runNow` can't race with
+   *  `tickRunningChains` and double-fire a step's IPC side effects. */
+  private readonly inFlightRunIds = new Set<string>()
+  /** Fast re-tick timer scheduled after a tickRunningChains() pass that left
+   *  at least one chain in `running` state. Cleared on stop() and reset each
+   *  time we schedule a new one so concurrent runs don't pile up timers. */
+  private fastTickTimer: ReturnType<typeof setTimeout> | null = null
   private readonly runPromptRunner: RunPromptRunner
   private readonly waitForSetupRunner: WaitForSetupRunner
   private readonly runCommandRunner: RunCommandRunner
@@ -90,6 +106,7 @@ export class AutomationService {
     // harnesses that never exercise run-command steps don't need to wire it.
     // The returned unsubscribe must still be a fn so cleanup() doesn't throw.
     this.subscribePtyData = opts.subscribePtyData ?? (() => () => {})
+    this.getPtyIdForPaneKey = opts.getPtyIdForPaneKey ?? (() => undefined)
     // Default getWebContents to the service's own setWebContents-tracked
     // reference so tests that don't supply a factory still get the WebContents
     // through the existing setWebContents() path.
@@ -117,6 +134,23 @@ export class AutomationService {
       openPromptPane: async (params) => openPromptPane(params, requirePaneCtx('prompt')),
       sendPromptToPane: async (params) => sendPromptToPane(params, requirePaneCtx('prompt')),
       getAgentStatus: this.getAgentStatus,
+      // Why: a chain run hits this milliseconds after createManagedWorktree
+      // returns; the renderer's worktrees:changed broadcast may not have
+      // settled. Hand the path + connectionId straight from main's store so
+      // the renderer doesn't depend on its cache to find the worktree.
+      getWorktreeSummary: (worktreeId) => {
+        const parsed = splitWorktreeId(worktreeId)
+        if (!parsed) {
+          return null
+        }
+        const repo = this.store.getRepo(parsed.repoId)
+        return { path: parsed.worktreePath, connectionId: repo?.connectionId ?? null }
+      },
+      // Why: scope outputTail capture to the agent's current turn so the
+      // step's `outputTail` surfaces the last assistant reply rather than
+      // the full pane history.
+      getPtyIdForPaneKey: this.getPtyIdForPaneKey,
+      subscribePtyData: this.subscribePtyData,
       now: () => Date.now()
     })
 
@@ -129,6 +163,15 @@ export class AutomationService {
       openCommandPane: async (params) => openCommandPane(params, requirePaneCtx('command')),
       getPtyExit: this.getPtyExit,
       subscribePtyData: this.subscribePtyData,
+      // Why: when paneRef is set, delegate to the renderer to resolve the
+      // command (review/create-pr need settings + hooks lookup) and write it
+      // with Enter into the existing pane's PTY.
+      sendCommandToPane: async (params) => sendCommandToPane(params, requirePaneCtx('command')),
+      // Why: review/create-pr launch interactive agents (Claude, Codex, …)
+      // whose PTY stays open after the turn finishes — so PTY exit alone
+      // would never resolve the step. Reuse the same agent-status registry
+      // run-prompt polls.
+      getAgentStatus: this.getAgentStatus,
       now: () => Date.now()
     })
 
@@ -152,9 +195,23 @@ export class AutomationService {
       getRunner: (kind) => this.resolveRunner(kind),
       persistRun: (run) => {
         this.store.replaceAutomationRun(run)
+        // Why: notify the renderer so AutomationsPage's run list and detail
+        // panes update without the operator hitting refresh. Mirrors the
+        // legacy dispatcher's `AUTOMATIONS_CHANGED_EVENT` flow but originates
+        // in main so chain-shape progress (step transitions, status flips,
+        // outputs) is surfaced live.
+        this.broadcastAutomationsChanged()
       },
       now: () => Date.now()
     })
+  }
+
+  private broadcastAutomationsChanged(): void {
+    const webContents = this.getWebContents()
+    if (!webContents || webContents.isDestroyed()) {
+      return
+    }
+    webContents.send('automations:changed')
   }
 
   setWebContents(webContents: WebContents | null): void {
@@ -164,6 +221,15 @@ export class AutomationService {
 
   setRendererReady(): void {
     this.rendererReady = true
+    void this.evaluateDueRuns()
+  }
+
+  /** Nudge the chain executor to immediately drive any in-progress chain runs
+   *  forward, bypassing the 60s scheduler cadence. Called by the agent-status
+   *  listener when an agent flips to a state that can unblock a polling
+   *  step (e.g. run-prompt waiting for `done`). Safe to call frequently —
+   *  the `evaluating` guard short-circuits concurrent invocations. */
+  wakeChains(): void {
     void this.evaluateDueRuns()
   }
 
@@ -180,6 +246,10 @@ export class AutomationService {
   }
 
   stop(): void {
+    if (this.fastTickTimer) {
+      clearTimeout(this.fastTickTimer)
+      this.fastTickTimer = null
+    }
     if (!this.timer) {
       return
     }
@@ -198,9 +268,13 @@ export class AutomationService {
     // through the normal 60s evaluateDueRuns() loop.
     if (automation.trigger && automation.steps && automation.steps.length > 0) {
       // Why: build the trigger context up-front (before persisting the run) so
-      // a missing worktree fails fast — operators see a clear error instead of
+      // a missing project fails fast — operators see a clear error instead of
       // a phantom `running` row with an unresolved template downstream.
       const triggerContext = this.buildTriggerContext(payload)
+      // Why: when the trigger accepts a project at run time, the operator's
+      // selection replaces automation.projectId for this run so downstream
+      // create-worktree steps target the picked repo.
+      const runProjectId = payload?.projectId ?? automation.projectId
       const run = this.store.createAutomationRun(automation, Date.now(), 'manual')
       run.status = 'running'
       // Seed the chain context with automation metadata so templates like
@@ -210,21 +284,32 @@ export class AutomationService {
       run.context = {
         automation: {
           workspaceId: automation.workspaceId,
-          projectId: automation.projectId
+          projectId: runProjectId
         },
         trigger: triggerContext
       }
       run.stepStates = []
       this.store.replaceAutomationRun(run)
-      try {
-        await this.chainExecutor.tick(automation, run)
-      } catch (e) {
-        // Why: a synchronous tick failure on the manual-run path must not
-        // bubble up as an unhandled IPC rejection. Finalize the run the same
-        // way tickRunningChains() does so the operator sees a `failed` row
-        // with a real error message instead of a phantom `running` row.
-        this.finalizeFailedRun(run, e)
-      }
+      this.broadcastAutomationsChanged()
+      // Why: fire-and-forget the initial tick so the renderer's "Run Now"
+      // modal can close immediately. The run is already persisted as
+      // `running`, so the UI sees progress on the next refresh; tick failures
+      // route through `finalizeFailedRun` and become a `failed` row that the
+      // operator will see in the run list. Awaiting the tick used to block
+      // the modal for the full duration of the synchronous step chain
+      // (create-worktree + setup-script spawn + open-prompt-pane round-trip).
+      //
+      // Track the run as in-flight so the scheduler loop (`tickRunningChains`)
+      // doesn't pick it up concurrently and double-fire a step's side effects.
+      this.inFlightRunIds.add(run.id)
+      void this.chainExecutor
+        .tick(automation, run)
+        .catch((e) => {
+          this.finalizeFailedRun(run, e)
+        })
+        .finally(() => {
+          this.inFlightRunIds.delete(run.id)
+        })
       return this.store.getAutomationRun(run.id) ?? run
     }
     // Legacy automation: same dispatch flow as scheduled runs.
@@ -238,14 +323,13 @@ export class AutomationService {
     if (payload?.linear) {
       triggerContext.linear = payload.linear
     }
-    if (payload?.worktreeId) {
-      const wt = this.store.listWorktrees().find((w) => w.id === payload.worktreeId)
-      if (!wt) {
-        throw new Error(`Worktree ${payload.worktreeId} not found.`)
+    if (payload?.projectId) {
+      // Why: validate the picked project up-front so the run fails fast with a
+      // clear error rather than hitting an unresolved projectId downstream.
+      const repo = this.store.getRepo(payload.projectId)
+      if (!repo) {
+        throw new Error(`Project ${payload.projectId} not found.`)
       }
-      triggerContext.worktreeId = wt.id
-      triggerContext.worktreeBranch = wt.branch
-      triggerContext.worktreePath = wt.path
     }
     return triggerContext
   }
@@ -278,7 +362,10 @@ export class AutomationService {
     try {
       const now = Date.now()
       for (const automation of this.store.listAutomations()) {
-        if (!automation.enabled || automation.nextRunAt > now) {
+        // Why: chain-shape automations are manual-only (empty rrule) — they
+        // dispatch via runNow, never on a schedule. Skip them in the scheduler
+        // loop so the rrule parser is never called against an empty string.
+        if (!automation.enabled || !automation.rrule || automation.nextRunAt > now) {
           continue
         }
         await this.evaluateAutomation(automation, now)
@@ -287,6 +374,29 @@ export class AutomationService {
     } finally {
       this.evaluating = false
     }
+    this.scheduleFastTickIfRunsActive()
+  }
+
+  /** Schedule a sub-cadence re-tick when at least one chain run is still
+   *  `running`. The default scheduler cadence is 60s; that's fine for idle
+   *  automations but too coarse for active runs that are waiting on a
+   *  short-debounce signal (e.g. run-prompt's 5s done-debounce). The fast
+   *  timer is a single setTimeout (not setInterval) so it naturally stops
+   *  once no run is active. */
+  private scheduleFastTickIfRunsActive(): void {
+    if (this.fastTickTimer) {
+      return
+    }
+    const hasRunning = this.store
+      .listAutomationRuns()
+      .some((run) => run.status === 'running' && !this.inFlightRunIds.has(run.id))
+    if (!hasRunning) {
+      return
+    }
+    this.fastTickTimer = setTimeout(() => {
+      this.fastTickTimer = null
+      void this.evaluateDueRuns()
+    }, 2000)
   }
 
   /** Drive every in-progress chain run forward by one runner tick. Runs in
@@ -299,10 +409,17 @@ export class AutomationService {
       if (run.status !== 'running') {
         continue
       }
+      // Why: a fire-and-forget runNow tick may still be advancing this run.
+      // Skip it here so two ticks don't drive the same chain concurrently and
+      // double-fire IPC side effects (openPromptPane etc.).
+      if (this.inFlightRunIds.has(run.id)) {
+        continue
+      }
       const automation = automations.get(run.automationId)
       if (!automation) {
         continue
       }
+      this.inFlightRunIds.add(run.id)
       try {
         await this.chainExecutor.tick(automation, run)
       } catch (e) {
@@ -310,8 +427,98 @@ export class AutomationService {
         // every other run. Mark this run failed and persist so the operator
         // sees the error instead of an indefinite `running` row.
         this.finalizeFailedRun(run, e)
+      } finally {
+        this.inFlightRunIds.delete(run.id)
       }
     }
+  }
+
+  /** Operator-initiated stop: mark the run cancelled, finalize any trailing
+   *  non-terminal step states with a "Cancelled" error so the UI doesn't
+   *  show a step indefinitely `running` under a stopped run, and drop every
+   *  runner tracker for the run so a stray tick can't pick the pane back up.
+   *  Returns the updated run or undefined when the id doesn't exist / the
+   *  run is already in a terminal state. */
+  cancelRun(runId: string): AutomationRun | undefined {
+    const run = this.store
+      .listAutomationRuns()
+      .find((entry) => entry.id === runId)
+    if (!run) {
+      return undefined
+    }
+    if (run.status !== 'running' && run.status !== 'pending' && run.status !== 'dispatching') {
+      return run
+    }
+    const now = Date.now()
+    if (run.stepStates) {
+      for (const state of run.stepStates) {
+        if (state.status === 'running' || state.status === 'pending') {
+          state.status = 'failed'
+          state.finishedAt = now
+          state.error = state.error ?? 'Cancelled by operator.'
+        }
+      }
+    }
+    run.status = 'cancelled'
+    run.error = run.error ?? 'Cancelled by operator.'
+    run.finishedAt = now
+    this.store.replaceAutomationRun(run)
+    // Drop every runner's tracker so a queued/in-flight tick doesn't try to
+    // resume the cancelled pane. Cheap no-op when a runner never saw the run.
+    for (const runner of this.allRunners()) {
+      runner.dropRun?.(run.id)
+    }
+    this.broadcastAutomationsChanged()
+    return run
+  }
+
+  /** Operator-initiated retry from a specific step. Truncates `stepStates`
+   *  to before the target index, drops every dropped step's runner tracker
+   *  so the retry starts fresh, flips the run back to `running`, and pokes
+   *  the chain executor to immediately pick it up. Returns undefined when
+   *  the run or step index can't be resolved. Why per-step: completed
+   *  steps' downstream context (`steps.<id>.…`) is preserved, so a retry of
+   *  step N can still template against steps 0…N-1. */
+  retryRunFromStep(runId: string, stepIndex: number): AutomationRun | undefined {
+    const run = this.store
+      .listAutomationRuns()
+      .find((entry) => entry.id === runId)
+    if (!run) {
+      return undefined
+    }
+    const automation = this.store
+      .listAutomations()
+      .find((entry) => entry.id === run.automationId)
+    if (!automation || !automation.steps || stepIndex < 0 || stepIndex >= automation.steps.length) {
+      return undefined
+    }
+    const droppedStepIds = (run.stepStates ?? []).slice(stepIndex).map((state) => state.stepId)
+    run.stepStates = (run.stepStates ?? []).slice(0, stepIndex)
+    run.status = 'running'
+    run.error = null
+    run.finishedAt = undefined
+    this.store.replaceAutomationRun(run)
+    for (const stepId of droppedStepIds) {
+      for (const runner of this.allRunners()) {
+        runner.dropStep?.(run.id, stepId)
+      }
+    }
+    this.broadcastAutomationsChanged()
+    // Why: kick a tick immediately rather than wait for the next scheduler
+    // cadence so the operator sees the retry start right away.
+    this.wakeChains()
+    return run
+  }
+
+  /** Iterable of every concrete runner so cancel/retry can fan out without
+   *  knowing the kind set. */
+  private allRunners(): StepRunner[] {
+    return [
+      this.runPromptRunner,
+      this.waitForSetupRunner,
+      this.runCommandRunner,
+      this.createWorktreeRunner
+    ]
   }
 
   /** Mark a run failed in response to a tick-time error and finalize any
@@ -335,6 +542,7 @@ export class AutomationService {
     run.error = errorMessage
     run.finishedAt = now
     this.store.replaceAutomationRun(run)
+    this.broadcastAutomationsChanged()
   }
 
   private async evaluateAutomation(automation: Automation, now: number): Promise<void> {

@@ -1326,15 +1326,20 @@ export type PreloadApi = {
     update: (args: { id: string; updates: AutomationUpdateInput }) => Promise<Automation>
     delete: (args: { id: string }) => Promise<void>
     runNow: (args: { id: string; payload?: RunNowPayload }) => Promise<AutomationRun>
+    cancelRun: (args: { runId: string }) => Promise<AutomationRun | null>
+    retryRunFromStep: (args: { runId: string; stepIndex: number }) => Promise<AutomationRun | null>
     markDispatchResult: (result: AutomationDispatchResult) => Promise<AutomationRun>
     rendererReady: () => Promise<void>
     onDispatchRequested: (callback: (request: AutomationDispatchRequest) => void) => () => void
+    onChanged: (callback: () => void) => () => void
     onOpenPromptPane: (
       callback: (request: {
         requestId: string
         worktreeId: string
         agentId: string
         prompt: string
+        worktreePath?: string
+        connectionId?: string | null
       }) => void
     ) => () => void
     replyOpenPromptPane: (
@@ -1360,6 +1365,20 @@ export type PreloadApi = {
     replyOpenCommandPane: (
       requestId: string,
       result: { ok: true; ptyId: string; paneKey: string } | { ok: false; error: string }
+    ) => void
+    onSendCommandToPane: (
+      callback: (request: {
+        requestId: string
+        paneKey: string
+        source: 'review' | 'create-pr' | 'custom'
+        commandId?: string
+        customCommand?: string
+        worktreeId: string
+      }) => void
+    ) => () => void
+    replySendCommandToPane: (
+      requestId: string,
+      result: { ok: true } | { ok: false; error: string }
     ) => void
   }
   wsl: {
