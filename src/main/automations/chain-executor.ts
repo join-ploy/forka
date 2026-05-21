@@ -82,6 +82,14 @@ export class ChainExecutor {
    *  for the next scheduler cadence (needs-more-time, halt failure, or run
    *  finalized). */
   private async tickOnce(automation: Automation, run: AutomationRun): Promise<boolean> {
+    // The outer tick() already guarantees automation.steps is non-empty before
+    // calling tickOnce, but TypeScript can't carry that narrowing across the
+    // call boundary — pull it into a local with a defensive guard.
+    const steps = automation.steps
+    if (!steps || steps.length === 0) {
+      return false
+    }
+
     if (!run.stepStates) {
       run.stepStates = []
     }
@@ -99,7 +107,7 @@ export class ChainExecutor {
       // Next step is the one at index === stepStates.length. If we've already
       // run them all, finalize.
       activeIdx = run.stepStates.length
-      if (activeIdx >= automation.steps.length) {
+      if (activeIdx >= steps.length) {
         // Defensive: all step slots are filled but the run wasn't finalized on
         // the prior tick. Route through the same finalizer the normal path
         // uses so `onFailure: 'continue'` policy is honored consistently.
@@ -109,11 +117,11 @@ export class ChainExecutor {
         this.deps.persistRun(run)
         return false
       }
-      state = makeStepState(automation.steps[activeIdx], this.deps.now())
+      state = makeStepState(steps[activeIdx], this.deps.now())
       run.stepStates.push(state)
     }
 
-    const step = automation.steps[activeIdx]
+    const step = steps[activeIdx]
     const runner = this.deps.getRunner(step.kind)
     if (!runner) {
       throw new Error(
@@ -187,7 +195,7 @@ export class ChainExecutor {
     // For `failed` with onFailure='continue', or `done`, fall through and
     // see whether the chain is now complete. If not, the next tick will
     // append the next step's state.
-    if (run.stepStates.length >= automation.steps.length && run.stepStates.every(isTerminal)) {
+    if (run.stepStates.length >= steps.length && run.stepStates.every(isTerminal)) {
       this.finalizeRun(automation, run)
       this.deps.persistRun(run)
       return false

@@ -672,7 +672,7 @@ app.whenReady().then(async () => {
       // empty displayName no longer trips "Invalid worktree name".
       const trimmedDisplay = input.displayName.trim()
       const generatedSlug = generateUniqueWorkspaceName(
-        collectTakenWorkspaceNamesForRepo(input.repoId, store.getAllWorktreeMeta())
+        collectTakenWorkspaceNamesForRepo(input.repoId, storeRef.getAllWorktreeMeta())
       )
       // Why: automation runs must happen in the background — never yank the
       // user's focus into the new worktree. `runHooks: true` would force
