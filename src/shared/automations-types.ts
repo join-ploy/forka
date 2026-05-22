@@ -1,4 +1,4 @@
-import type { TuiAgent } from './types'
+import type { SetupDecision, TuiAgent } from './types'
 
 export type AutomationWorkspaceMode = 'existing' | 'new_per_run'
 export type AutomationExecutionTargetType = 'local' | 'ssh'
@@ -252,7 +252,12 @@ export type AutoDedupEntry = {
   lastRunId?: string
 }
 
-export type StepKind = 'run-prompt' | 'create-worktree' | 'wait-for-setup' | 'run-command'
+export type StepKind =
+  | 'run-prompt'
+  | 'create-worktree'
+  | 'create-workspace-group'
+  | 'wait-for-setup'
+  | 'run-command'
 
 export type RunPromptConfig = {
   worktreeRef: string
@@ -283,6 +288,27 @@ export type CreateWorktreeConfig = {
   linkLinearIssue: boolean
 }
 
+// Why (grouped-workspaces L3): parallel to CreateWorktreeConfig but addresses N
+// repos as members of a single WorkspaceGroup. `branchName` doubles as the
+// group's workspaceName, parent folder name, and the per-member branch name —
+// the IPC handler enforces that triple-purpose use, so we mirror it here so
+// templates only need to resolve a single string.
+export type CreateWorkspaceGroupConfig = {
+  /** One per repo. Each becomes a member worktree under the group's parent
+   *  folder. The IPC requires ≥2 members and rejects repo duplicates. */
+  members: {
+    repoId: string
+    baseBranch: string // template
+    setupDecision?: SetupDecision
+  }[]
+  /** Used as the group's workspaceName, parent folder name, and per-member
+   *  branch name. Templated. */
+  branchName: string
+  /** Optional human-readable label for the group card. Templated. */
+  displayName?: string
+  linkLinearIssue?: boolean
+}
+
 export type WaitForSetupConfig = {
   worktreeRef: string // template
   requireSuccess: boolean
@@ -306,6 +332,7 @@ export type RunCommandConfig = {
 export type StepConfig =
   | RunPromptConfig
   | CreateWorktreeConfig
+  | CreateWorkspaceGroupConfig
   | WaitForSetupConfig
   | RunCommandConfig
 

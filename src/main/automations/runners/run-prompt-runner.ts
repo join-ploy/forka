@@ -34,6 +34,21 @@ export type RunPromptDeps = {
     path: string
     connectionId: string | null
   } | null
+  /** Resolves a `group:<uuid>` id (the output of CreateWorkspaceGroupRunner)
+   *  into the group's parent path plus the first member's worktreeId. The
+   *  agent is launched with CWD = `parentPath` so `pwd` shows the shared
+   *  workspace folder; the member worktreeId is what the pane is bound to in
+   *  the UI (status registry, tab activation). Returns null when the id is
+   *  not a group reference; the runner then falls through to the worktree
+   *  path. Optional so tests that never address a group can skip wiring. */
+  getGroupSummary?: (groupId: string) => {
+    parentPath: string
+    firstMemberWorktreeId: string
+    /** Connection id of the member's owning repo. Groups are uniform-
+     *  connection by construction (validated at create time), so the first
+     *  member is representative. */
+    connectionId: string | null
+  } | null
   /** Resolve a paneKey to its current ptyId so the runner can subscribe to
    *  the pane's data stream and capture the agent's last-turn output for
    *  step output. Returns undefined if the pane has no live PTY (pane gone,
@@ -156,17 +171,45 @@ export class RunPromptRunner implements StepRunner {
 
       let paneKey: string
       try {
-        // Why: pre-resolve path + connectionId in main and hand them to the
-        // renderer so it doesn't have to look the worktree up in its cache.
-        // The chain creates the worktree milliseconds earlier; the renderer's
-        // `worktrees:changed` broadcast may not have settled yet.
-        const summary = this.deps.getWorktreeSummary?.(worktreeId) ?? null
+        // Why (grouped-workspaces L3): when the resolved worktreeRef is a
+        // `group:<uuid>` id (e.g. `{{steps.<create-workspace-group>.groupId}}`),
+        // the agent should run at the group's shared parent folder rather than
+        // any single member's worktree. Redirect both the worktreeId binding
+        // (to the first member, so UI tab/status lookups still find a real
+        // worktree) and the CWD (to parentPath) here. Phase J's pty:spawn
+        // override handles the inverse case — when the ref is a member
+        // worktreeId, it already redirects the CWD to parentPath if the
+        // worktree has groupId set — so we don't need a second branch for
+        // member-targeted runs.
+        let effectiveWorktreeId = worktreeId
+        let effectiveSummary: { path: string; connectionId: string | null } | null = null
+        if (worktreeId.startsWith('group:')) {
+          const groupSummary = this.deps.getGroupSummary?.(worktreeId) ?? null
+          if (!groupSummary) {
+            return {
+              outcome: 'failed',
+              status: 'failed',
+              error: `Group not found for worktreeRef "${worktreeId}".`
+            }
+          }
+          effectiveWorktreeId = groupSummary.firstMemberWorktreeId
+          effectiveSummary = {
+            path: groupSummary.parentPath,
+            connectionId: groupSummary.connectionId
+          }
+        } else {
+          // Why: pre-resolve path + connectionId in main and hand them to the
+          // renderer so it doesn't have to look the worktree up in its cache.
+          // The chain creates the worktree milliseconds earlier; the renderer's
+          // `worktrees:changed` broadcast may not have settled yet.
+          effectiveSummary = this.deps.getWorktreeSummary?.(worktreeId) ?? null
+        }
         const result = await this.deps.openPromptPane({
-          worktreeId,
+          worktreeId: effectiveWorktreeId,
           agentId: config.agentId,
           prompt,
-          ...(summary
-            ? { worktreePath: summary.path, connectionId: summary.connectionId }
+          ...(effectiveSummary
+            ? { worktreePath: effectiveSummary.path, connectionId: effectiveSummary.connectionId }
             : {})
         })
         paneKey = result.paneKey
@@ -295,10 +338,7 @@ export class RunPromptRunner implements StepRunner {
    *  if the deps aren't wired or the pane isn't bound to a live PTY yet, we
    *  fall through with `outputTail = null` and downstream callsites surface
    *  an empty string. */
-  private buildTracker(
-    paneKey: string,
-    opts: { requiresWorkingFirst: boolean }
-  ): Tracker {
+  private buildTracker(paneKey: string, opts: { requiresWorkingFirst: boolean }): Tracker {
     const tracker: Tracker = {
       paneKey,
       openedAt: this.deps.now(),

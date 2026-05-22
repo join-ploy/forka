@@ -32,6 +32,10 @@ import { RunPromptRunner } from './runners/run-prompt-runner'
 import { WaitForSetupRunner } from './runners/wait-for-setup-runner'
 import { RunCommandRunner } from './runners/run-command-runner'
 import { CreateWorktreeRunner, type CreateWorktreeDeps } from './runners/create-worktree-runner'
+import {
+  CreateWorkspaceGroupRunner,
+  type CreateWorkspaceGroupDeps
+} from './runners/create-workspace-group-runner'
 import type { StepRunner } from './step-runner'
 import { splitWorktreeId } from '../../shared/worktree-id'
 
@@ -78,6 +82,11 @@ export type AutomationServiceOpts = {
    *  Omitting it makes the runner throw a clear error if a chain tries to
    *  invoke it (unit tests that never exercise `create-worktree` can skip it). */
   createWorktree?: CreateWorktreeDeps['createWorktree']
+  /** Bridge from the chain executor's `create-workspace-group` step to the
+   *  workspace-groups:create flow. Wired in src/main/index.ts. Omitting it
+   *  makes the runner throw if a chain ever tries to invoke it — same shape
+   *  as `createWorktree` above. */
+  createWorkspaceGroup?: CreateWorkspaceGroupDeps['createWorkspaceGroup']
   /** Lazy accessor for the renderer process. Resolved at call-time on every
    *  runner tick because the BrowserWindow lifecycle is independent of this
    *  service — capturing a WebContents reference eagerly would let the service
@@ -137,6 +146,7 @@ export class AutomationService {
   private readonly waitForSetupRunner: WaitForSetupRunner
   private readonly runCommandRunner: RunCommandRunner
   private readonly createWorktreeRunner: CreateWorktreeRunner
+  private readonly createWorkspaceGroupRunner: CreateWorkspaceGroupRunner
   private readonly chainExecutor: ChainExecutor
 
   constructor(store: Store, opts: AutomationServiceOpts = {}) {
@@ -192,6 +202,26 @@ export class AutomationService {
         const repo = this.store.getRepo(parsed.repoId)
         return { path: parsed.worktreePath, connectionId: repo?.connectionId ?? null }
       },
+      // Why (grouped-workspaces L3): when a run-prompt step's worktreeRef
+      // resolves to a `group:<uuid>` (the output shape of
+      // create-workspace-group), the runner needs the group's parentPath as
+      // the agent CWD and a representative member worktreeId for the UI
+      // binding. Resolve both straight from main's store so the renderer can't
+      // race the worktrees:changed broadcast.
+      getGroupSummary: (groupId) => {
+        const group = this.store.getWorkspaceGroups().find((g) => g.id === groupId)
+        if (!group || group.memberWorktreeIds.length === 0) {
+          return null
+        }
+        const firstMemberWorktreeId = group.memberWorktreeIds[0]
+        const parsed = splitWorktreeId(firstMemberWorktreeId)
+        const repo = parsed ? this.store.getRepo(parsed.repoId) : null
+        return {
+          parentPath: group.parentPath,
+          firstMemberWorktreeId,
+          connectionId: repo?.connectionId ?? null
+        }
+      },
       // Why: scope outputTail capture to the agent's current turn so the
       // step's `outputTail` surfaces the last assistant reply rather than
       // the full pane history.
@@ -234,6 +264,22 @@ export class AutomationService {
       })
     this.createWorktreeRunner = new CreateWorktreeRunner({
       createWorktree: createWorktreeDep,
+      now: () => Date.now()
+    })
+
+    // Why: same fail-loud default as createWorktree — a chain that hits
+    // create-workspace-group without the dep wired surfaces a clear error
+    // instead of a confusing TypeError mid-tick. Service tests that never
+    // exercise group steps can skip the wiring.
+    const createWorkspaceGroupDep: CreateWorkspaceGroupDeps['createWorkspaceGroup'] =
+      opts.createWorkspaceGroup ??
+      (() => {
+        throw new Error(
+          'AutomationService: createWorkspaceGroup dep not wired (cannot run create-workspace-group steps).'
+        )
+      })
+    this.createWorkspaceGroupRunner = new CreateWorkspaceGroupRunner({
+      createWorkspaceGroup: createWorkspaceGroupDep,
       now: () => Date.now()
     })
 
@@ -472,6 +518,9 @@ export class AutomationService {
     if (kind === 'create-worktree') {
       return this.createWorktreeRunner
     }
+    if (kind === 'create-workspace-group') {
+      return this.createWorkspaceGroupRunner
+    }
     return undefined
   }
 
@@ -679,7 +728,8 @@ export class AutomationService {
       this.runPromptRunner,
       this.waitForSetupRunner,
       this.runCommandRunner,
-      this.createWorktreeRunner
+      this.createWorktreeRunner,
+      this.createWorkspaceGroupRunner
     ]
   }
 

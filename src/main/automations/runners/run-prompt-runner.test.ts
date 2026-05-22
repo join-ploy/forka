@@ -415,4 +415,69 @@ describe('RunPromptRunner', () => {
     await runner.tick(ctx)
     expect(sendPromptToPane).toHaveBeenCalledWith({ paneKey: 'tab-9:1', prompt: 'Hello' })
   })
+
+  // ─── group: branch (grouped-workspaces L3) ───────────────────────────────
+
+  it('opens the pane at the group parentPath when worktreeRef resolves to a group:<id>', async () => {
+    const openPromptPane = vi.fn().mockResolvedValue({ paneKey: 'tab-grp:pane-1' })
+    const getGroupSummary = vi.fn().mockReturnValue({
+      parentPath: '/orca/workspaces/feat-x',
+      firstMemberWorktreeId: 'repo-a::/orca/workspaces/feat-x/repo-a',
+      connectionId: null
+    })
+    const getWorktreeSummary = vi.fn() // must NOT be called for group: ids
+    const runner = new RunPromptRunner({
+      openPromptPane,
+      getAgentStatus: vi.fn().mockReturnValue(undefined),
+      getGroupSummary,
+      getWorktreeSummary,
+      now: () => 0
+    })
+    // Why: simulate the output shape CreateWorkspaceGroupRunner stamps into
+    // context.steps — `groupId` is a `group:<uuid>` string.
+    const step: Step = {
+      ...baseStep,
+      config: { ...baseStep.config, worktreeRef: '{{steps.cwg1.groupId}}' }
+    }
+    const ctx: StepRunnerCtx = {
+      runId: 'r-group',
+      step,
+      state: baseState,
+      context: { steps: { cwg1: { groupId: 'group:abc-123' } } }
+    }
+    const result = await runner.tick(ctx)
+    expect(getGroupSummary).toHaveBeenCalledWith('group:abc-123')
+    expect(getWorktreeSummary).not.toHaveBeenCalled()
+    // The agent is bound to the first member's worktreeId (UI binding) and
+    // its CWD points at the group's parentPath (where `pwd` lands).
+    expect(openPromptPane).toHaveBeenCalledWith({
+      worktreeId: 'repo-a::/orca/workspaces/feat-x/repo-a',
+      agentId: 'claude',
+      prompt: 'Hello',
+      worktreePath: '/orca/workspaces/feat-x',
+      connectionId: null
+    })
+    expect(result.outcome).toBe('needs-more-time')
+  })
+
+  it('fails fast when worktreeRef resolves to a group:<id> the store cannot find', async () => {
+    const openPromptPane = vi.fn()
+    const getGroupSummary = vi.fn().mockReturnValue(null)
+    const runner = new RunPromptRunner({
+      openPromptPane,
+      getAgentStatus: vi.fn().mockReturnValue(undefined),
+      getGroupSummary,
+      now: () => 0
+    })
+    const step: Step = {
+      ...baseStep,
+      config: { ...baseStep.config, worktreeRef: 'group:missing' }
+    }
+    const ctx: StepRunnerCtx = { runId: 'r', step, state: baseState, context: {} }
+    const result = await runner.tick(ctx)
+    expect(result.outcome).toBe('failed')
+    expect(result.status).toBe('failed')
+    expect(result.error).toMatch(/Group not found.*group:missing/)
+    expect(openPromptPane).not.toHaveBeenCalled()
+  })
 })
