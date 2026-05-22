@@ -6,7 +6,10 @@
 import { z } from 'zod'
 import type { WorkspaceGroup } from './types'
 
-const workspaceGroupSchema = z
+// Why: typed-schema-variable matches the pattern in workspace-session-schema.ts
+// (see browserWorkspaceSchema). It removes the runtime cast at the use site and
+// lets future additive fields on WorkspaceGroup flow through without a schema edit.
+const workspaceGroupSchema: z.ZodType<WorkspaceGroup> = z
   .object({
     id: z.string(),
     workspaceName: z.string(),
@@ -37,7 +40,17 @@ export function parseWorkspaceGroups(raw: unknown): WorkspaceGroup[] {
   for (const entry of raw) {
     const parsed = workspaceGroupSchema.safeParse(entry)
     if (parsed.success) {
-      out.push(parsed.data as WorkspaceGroup)
+      out.push(parsed.data)
+    } else {
+      // Why: per-entry drops are silent for the user (we don't throw or surface
+      // a toast), but a console line leaves a breadcrumb when investigating
+      // missing groups. Keep the message compact — full zod issue dumps are
+      // noisy and only the first divergent field is usually actionable.
+      const firstIssue = parsed.error.issues[0]
+      const path = firstIssue?.path.join('.') || '<root>'
+      console.warn(
+        `[workspace-group-schema] dropping malformed entry: ${path}: ${firstIssue?.message ?? 'invalid'}`
+      )
     }
   }
   return out
