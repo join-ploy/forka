@@ -125,6 +125,7 @@ export type AutomationUpdateInput = Partial<
     | 'missedRunGraceMinutes'
     | 'trigger'
     | 'steps'
+    | 'autoTriggers'
   >
 >
 

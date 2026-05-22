@@ -2196,4 +2196,35 @@ describe('Store', () => {
     store.setAutomationsPollIntervalSeconds(120)
     expect(store.getAutomationsPollIntervalSeconds()).toBe(120)
   })
+
+  it('round-trips autoTriggers through create/update/list', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo({ id: 'p1' }))
+
+    const created = store.createAutomation({
+      name: 'x',
+      prompt: '',
+      agentId: 'claude',
+      projectId: 'p1',
+      workspaceMode: 'new_per_run',
+      timezone: 'UTC',
+      rrule: '',
+      dtstart: 0
+    })
+
+    store.updateAutomation(created.id, {
+      autoTriggers: [
+        {
+          id: 'at1',
+          source: 'linear-issue',
+          enabled: true,
+          enabledAt: 1,
+          rules: [{ id: 'rl1', conditions: [], projectId: 'p1' }]
+        }
+      ]
+    })
+
+    const after = store.listAutomations().find((a) => a.id === created.id)
+    expect(after?.autoTriggers?.[0]?.rules[0]?.projectId).toBe('p1')
+  })
 })
