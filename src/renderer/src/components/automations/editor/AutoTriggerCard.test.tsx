@@ -2,13 +2,19 @@ import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
   AutoTriggerCard,
+  addCondition,
   addRule,
+  removeCondition,
   removeRule,
   reorderRule,
   toggleEnabled,
+  updateCondition,
   updateRule
 } from './AutoTriggerCard'
-import type { AutoTrigger } from '../../../../../shared/automations-types'
+import type {
+  AutoTrigger,
+  SerializableFieldDescriptor
+} from '../../../../../shared/automations-types'
 
 const mkTrigger = (overrides: Partial<AutoTrigger> = {}): AutoTrigger => ({
   id: 'at1',
@@ -24,6 +30,18 @@ const projects = [
   { id: 'p2', displayName: 'mobile-app' }
 ]
 
+const fieldCatalog: SerializableFieldDescriptor[] = [
+  {
+    field: 'linear.assignee',
+    label: 'Assignee',
+    valueKind: 'user',
+    ops: ['is', 'is-not', 'is-any-of'],
+    hasFetchOptions: true
+  }
+]
+
+const noopLoadOptions = async (): Promise<{ value: string; label: string }[]> => []
+
 describe('AutoTriggerCard rendering', () => {
   it('renders source label and enable toggle', () => {
     const html = renderToStaticMarkup(
@@ -32,6 +50,8 @@ describe('AutoTriggerCard rendering', () => {
         onChange={() => {}}
         onRemove={() => {}}
         projects={projects}
+        fieldCatalog={fieldCatalog}
+        loadOptions={noopLoadOptions}
       />
     )
     expect(html).toContain('Linear issue')
@@ -45,6 +65,8 @@ describe('AutoTriggerCard rendering', () => {
         onChange={() => {}}
         onRemove={() => {}}
         projects={projects}
+        fieldCatalog={fieldCatalog}
+        loadOptions={noopLoadOptions}
       />
     )
     expect(html).toContain('Remove')
@@ -57,6 +79,8 @@ describe('AutoTriggerCard rendering', () => {
         onChange={() => {}}
         onRemove={() => {}}
         projects={projects}
+        fieldCatalog={fieldCatalog}
+        loadOptions={noopLoadOptions}
       />
     )
     expect(html).toContain('+ Add rule')
@@ -67,14 +91,22 @@ describe('AutoTriggerCard rendering', () => {
       rules: [{ id: 'rl1', projectId: 'p1', conditions: [] }]
     })
     const html = renderToStaticMarkup(
-      <AutoTriggerCard trigger={trig} onChange={() => {}} onRemove={() => {}} projects={projects} />
+      <AutoTriggerCard
+        trigger={trig}
+        onChange={() => {}}
+        onRemove={() => {}}
+        projects={projects}
+        fieldCatalog={fieldCatalog}
+        loadOptions={noopLoadOptions}
+      />
     )
     expect(html).toContain('orca-repo')
     expect(html).toContain('mobile-app')
     expect(html).toContain('Move up')
     expect(html).toContain('Move down')
     expect(html).toContain('Delete rule')
-    expect(html).toContain('Conditions (Phase 13)')
+    expect(html).toContain('+ Add condition')
+    expect(html).toContain('No conditions')
   })
 
   it('disables Move up on first rule and Move down on last rule', () => {
@@ -85,7 +117,14 @@ describe('AutoTriggerCard rendering', () => {
       ]
     })
     const html = renderToStaticMarkup(
-      <AutoTriggerCard trigger={trig} onChange={() => {}} onRemove={() => {}} projects={projects} />
+      <AutoTriggerCard
+        trigger={trig}
+        onChange={() => {}}
+        onRemove={() => {}}
+        projects={projects}
+        fieldCatalog={fieldCatalog}
+        loadOptions={noopLoadOptions}
+      />
     )
     // First rule: Move up disabled. Last rule: Move down disabled. Total of
     // two `disabled` attrs on reorder buttons.
@@ -153,5 +192,65 @@ describe('AutoTriggerCard helpers', () => {
     const result = updateRule(trig, 'rl1', { projectId: 'p1' })
     expect(result.rules[0].projectId).toBe('p1')
     expect(result.rules[1].projectId).toBe('p2')
+  })
+
+  it('addCondition seeds field+op from the catalog head', () => {
+    const trig = mkTrigger({
+      rules: [{ id: 'rl1', projectId: '', conditions: [] }]
+    })
+    const result = addCondition(trig, 'rl1', fieldCatalog)
+    expect(result.rules[0].conditions).toHaveLength(1)
+    expect(result.rules[0].conditions[0].field).toBe('linear.assignee')
+    expect(result.rules[0].conditions[0].op).toBe('is')
+    expect(result.rules[0].conditions[0].value).toBe('')
+  })
+
+  it('addCondition with empty catalog still appends a placeholder row', () => {
+    const trig = mkTrigger({
+      rules: [{ id: 'rl1', projectId: '', conditions: [] }]
+    })
+    const result = addCondition(trig, 'rl1', [])
+    expect(result.rules[0].conditions).toHaveLength(1)
+    expect(result.rules[0].conditions[0].field).toBe('')
+  })
+
+  it('removeCondition splices by index', () => {
+    const trig = mkTrigger({
+      rules: [
+        {
+          id: 'rl1',
+          projectId: '',
+          conditions: [
+            { field: 'linear.assignee', op: 'is', value: 'a' },
+            { field: 'linear.assignee', op: 'is', value: 'b' }
+          ]
+        }
+      ]
+    })
+    const result = removeCondition(trig, 'rl1', 0)
+    expect(result.rules[0].conditions).toHaveLength(1)
+    expect(result.rules[0].conditions[0].value).toBe('b')
+  })
+
+  it('updateCondition replaces in place', () => {
+    const trig = mkTrigger({
+      rules: [
+        {
+          id: 'rl1',
+          projectId: '',
+          conditions: [{ field: 'linear.assignee', op: 'is', value: 'a' }]
+        }
+      ]
+    })
+    const result = updateCondition(trig, 'rl1', 0, {
+      field: 'linear.assignee',
+      op: 'is-not',
+      value: 'b'
+    })
+    expect(result.rules[0].conditions[0]).toEqual({
+      field: 'linear.assignee',
+      op: 'is-not',
+      value: 'b'
+    })
   })
 })

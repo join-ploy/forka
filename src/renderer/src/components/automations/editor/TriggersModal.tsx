@@ -3,6 +3,8 @@ import { useAppStore } from '@/store'
 import type {
   TriggerConfig,
   AutoTrigger,
+  SerializableFieldDescriptor,
+  SerializableTriggerSource,
   TriggerSourceId
 } from '../../../../../shared/automations-types'
 import type { Repo } from '../../../../../shared/types'
@@ -34,6 +36,52 @@ export function TriggersModal(props: TriggersModalProps): React.JSX.Element | nu
   const projects = React.useMemo(
     () => repos.map((r) => ({ id: r.id, displayName: r.displayName })),
     [repos]
+  )
+
+  // Why: load the source catalog from main on each modal open so a fresh
+  // Linear connect/disconnect is reflected without a reload. Empty default keeps
+  // the UI usable while the IPC roundtrip resolves; rules render with disabled
+  // "+ Add condition" until the catalog arrives.
+  const [sources, setSources] = React.useState<SerializableTriggerSource[]>([])
+  React.useEffect(() => {
+    if (!props.open) {
+      return
+    }
+    void window.api.triggerSources.list().then(setSources)
+  }, [props.open])
+
+  const fieldCatalogBySource = React.useMemo(() => {
+    const map = new Map<TriggerSourceId, SerializableFieldDescriptor[]>()
+    for (const s of sources) {
+      map.set(s.id, s.fieldCatalog)
+    }
+    return map
+  }, [sources])
+
+  // Why: per-(sourceId, field) option cache. The first ConditionRow mount for a
+  // field hits IPC; subsequent renders reuse the cached array. Cleared whenever
+  // the modal closes (the effect above re-runs on open and seeds fresh sources;
+  // the cache lives only as long as the component instance).
+  const [optionsCache, setOptionsCache] = React.useState<
+    Map<string, { value: string; label: string }[]>
+  >(new Map())
+  const loadOptionsFor = React.useCallback(
+    (sourceId: TriggerSourceId) =>
+      async (field: string): Promise<{ value: string; label: string }[]> => {
+        const cacheKey = `${sourceId}|${field}`
+        const cached = optionsCache.get(cacheKey)
+        if (cached) {
+          return cached
+        }
+        const opts = await window.api.triggerSources.fetchOptions({ sourceId, field })
+        setOptionsCache((m) => {
+          const next = new Map(m)
+          next.set(cacheKey, opts)
+          return next
+        })
+        return opts
+      },
+    [optionsCache]
   )
 
   // Why: re-seed the draft each time the modal opens so a prior Cancel doesn't
@@ -177,6 +225,8 @@ export function TriggersModal(props: TriggersModalProps): React.JSX.Element | nu
                     }
                     onRemove={() => removeTrigger(t.id)}
                     projects={projects}
+                    fieldCatalog={fieldCatalogBySource.get(t.source) ?? []}
+                    loadOptions={loadOptionsFor(t.source)}
                   />
                 </li>
               ))}

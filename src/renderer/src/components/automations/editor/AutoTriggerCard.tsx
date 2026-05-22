@@ -1,5 +1,13 @@
 import * as React from 'react'
-import type { AutoTrigger, Rule, TriggerSourceId } from '../../../../../shared/automations-types'
+import type {
+  AutoTrigger,
+  Condition,
+  ConditionOp,
+  Rule,
+  SerializableFieldDescriptor,
+  TriggerSourceId
+} from '../../../../../shared/automations-types'
+import { ConditionRow } from './ConditionRow'
 
 export type AutoTriggerCardProps = {
   trigger: AutoTrigger
@@ -7,6 +15,12 @@ export type AutoTriggerCardProps = {
   onRemove: () => void
   /** Used for the per-rule project picker. */
   projects: { id: string; displayName: string }[]
+  /** Catalog of fields the trigger's source can match on. Empty array is safe —
+   *  the card still renders the rule skeleton, conditions just can't be added. */
+  fieldCatalog: SerializableFieldDescriptor[]
+  /** Closure bound to this trigger's source by the parent so ConditionRow can
+   *  fetch option lists without knowing about source ids. */
+  loadOptions: (field: string) => Promise<{ value: string; label: string }[]>
 }
 
 // Why: per-source human label; mirrors TriggerPill's SOURCE_LABEL but uses the
@@ -62,8 +76,66 @@ export function updateRule(
   }
 }
 
+function defaultConditionValue(op: ConditionOp): Condition['value'] {
+  // Why: mirror ConditionRow's defaultValueFor without importing it — the
+  // catalog's valueKind isn't known here for string/number distinction at
+  // append time, so always seed with the string/array shape and let
+  // ConditionRow recompute on the first field change.
+  const isMultiOp =
+    op === 'is-any-of' ||
+    op === 'is-none-of' ||
+    op === 'contains-any' ||
+    op === 'contains-all' ||
+    op === 'contains-none'
+  return isMultiOp ? [] : ''
+}
+
+export function addCondition(
+  trigger: AutoTrigger,
+  ruleId: string,
+  fieldCatalog: SerializableFieldDescriptor[]
+): AutoTrigger {
+  const head = fieldCatalog[0]
+  const newCondition: Condition = {
+    field: head?.field ?? '',
+    op: head?.ops[0] ?? 'is',
+    value: defaultConditionValue(head?.ops[0] ?? 'is')
+  }
+  return {
+    ...trigger,
+    rules: trigger.rules.map((r) =>
+      r.id === ruleId ? { ...r, conditions: [...r.conditions, newCondition] } : r
+    )
+  }
+}
+
+export function removeCondition(trigger: AutoTrigger, ruleId: string, index: number): AutoTrigger {
+  return {
+    ...trigger,
+    rules: trigger.rules.map((r) =>
+      r.id === ruleId ? { ...r, conditions: r.conditions.filter((_, i) => i !== index) } : r
+    )
+  }
+}
+
+export function updateCondition(
+  trigger: AutoTrigger,
+  ruleId: string,
+  index: number,
+  next: Condition
+): AutoTrigger {
+  return {
+    ...trigger,
+    rules: trigger.rules.map((r) =>
+      r.id === ruleId
+        ? { ...r, conditions: r.conditions.map((c, i) => (i === index ? next : c)) }
+        : r
+    )
+  }
+}
+
 export function AutoTriggerCard(props: AutoTriggerCardProps): React.JSX.Element {
-  const { trigger, onChange, onRemove, projects } = props
+  const { trigger, onChange, onRemove, projects, fieldCatalog, loadOptions } = props
 
   const onToggle = (): void => {
     onChange(toggleEnabled(trigger))
@@ -105,10 +177,15 @@ export function AutoTriggerCard(props: AutoTriggerCardProps): React.JSX.Element 
             index={idx}
             total={trigger.rules.length}
             projects={projects}
+            fieldCatalog={fieldCatalog}
+            loadOptions={loadOptions}
             onProjectChange={(projectId) => onChange(updateRule(trigger, rule.id, { projectId }))}
             onMoveUp={() => onChange(reorderRule(trigger, idx, idx - 1))}
             onMoveDown={() => onChange(reorderRule(trigger, idx, idx + 1))}
             onDelete={() => onChange(removeRule(trigger, rule.id))}
+            onAddCondition={() => onChange(addCondition(trigger, rule.id, fieldCatalog))}
+            onRemoveCondition={(i) => onChange(removeCondition(trigger, rule.id, i))}
+            onUpdateCondition={(i, next) => onChange(updateCondition(trigger, rule.id, i, next))}
           />
         ))}
       </ul>
@@ -129,14 +206,33 @@ type RuleRowProps = {
   index: number
   total: number
   projects: { id: string; displayName: string }[]
+  fieldCatalog: SerializableFieldDescriptor[]
+  loadOptions: (field: string) => Promise<{ value: string; label: string }[]>
   onProjectChange: (projectId: string) => void
   onMoveUp: () => void
   onMoveDown: () => void
   onDelete: () => void
+  onAddCondition: () => void
+  onRemoveCondition: (index: number) => void
+  onUpdateCondition: (index: number, next: Condition) => void
 }
 
 function RuleRow(props: RuleRowProps): React.JSX.Element {
-  const { rule, index, total, projects, onProjectChange, onMoveUp, onMoveDown, onDelete } = props
+  const {
+    rule,
+    index,
+    total,
+    projects,
+    fieldCatalog,
+    loadOptions,
+    onProjectChange,
+    onMoveUp,
+    onMoveDown,
+    onDelete,
+    onAddCondition,
+    onRemoveCondition,
+    onUpdateCondition
+  } = props
   const isFirst = index === 0
   const isLast = index === total - 1
   return (
@@ -190,9 +286,30 @@ function RuleRow(props: RuleRowProps): React.JSX.Element {
         </select>
       </label>
 
-      {/* Why: Phase 13 plugs the real condition editor in here. The stub keeps
-          the surface stable for the modal's tests. */}
-      <p className="mt-2 text-muted-foreground">Conditions (Phase 13)</p>
+      <div className="mt-2 space-y-1">
+        {rule.conditions.length === 0 ? (
+          <p className="text-muted-foreground">No conditions — rule matches every candidate.</p>
+        ) : (
+          rule.conditions.map((cond, i) => (
+            <ConditionRow
+              key={i}
+              condition={cond}
+              fieldCatalog={fieldCatalog}
+              loadOptions={loadOptions}
+              onChange={(next) => onUpdateCondition(i, next)}
+              onRemove={() => onRemoveCondition(i)}
+            />
+          ))
+        )}
+        <button
+          type="button"
+          onClick={onAddCondition}
+          disabled={fieldCatalog.length === 0}
+          className="rounded border border-border bg-background px-2 py-0.5 hover:bg-accent hover:text-foreground disabled:opacity-50"
+        >
+          + Add condition
+        </button>
+      </div>
     </li>
   )
 }
