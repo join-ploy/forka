@@ -59,8 +59,18 @@ describe('TriggerPill rendering', () => {
       { id: 'at1', source: 'linear-issue', enabled: true, enabledAt: 0, rules: [] }
     ]
     const html = renderToStaticMarkup(
-      <TriggerPill trigger={baseTrigger} onTriggerChange={() => {}} autoTriggers={triggers} />
+      <TriggerPill trigger={baseTrigger} onOpenTriggers={() => {}} autoTriggers={triggers} />
     )
     expect(html).toContain('Manual + Linear auto')
+  })
+
+  it('renders as a plain button without an embedded popover/dialog', () => {
+    // Why: Phase 11.2 — the pill no longer owns the popover; clicking it opens
+    // the separate TriggersModal. So no role="dialog" inside this component.
+    const html = renderToStaticMarkup(
+      <TriggerPill trigger={baseTrigger} onOpenTriggers={() => {}} />
+    )
+    expect(html).toMatch(/<button[^>]*aria-label=["']Trigger["']/)
+    expect(html).not.toMatch(/role=["']dialog["']/)
   })
 })
