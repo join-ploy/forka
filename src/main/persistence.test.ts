@@ -2331,4 +2331,62 @@ describe('Store', () => {
     const reloaded = store.listAutomations().find((a) => a.id === created.id)
     expect(reloaded?.autoTriggers?.[0]?.id).toBe('at1')
   })
+
+  describe('workspaceGroups persistence', () => {
+    beforeEach(() => {
+      // Why: the malformed-entry branch in parseWorkspaceGroups logs a
+      // console.warn breadcrumb. Silence it here so the test output stays
+      // focused on the assertions.
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+    })
+
+    it('defaults workspaceGroups to [] when absent from persisted file', async () => {
+      writeDataFile({
+        schemaVersion: 1,
+        repos: [],
+        worktreeMeta: {},
+        settings: {},
+        ui: {},
+        githubCache: { pr: {}, issue: {} },
+        workspaceSession: {}
+      })
+      const store = await createStore()
+      expect(store.getWorkspaceGroups()).toEqual([])
+    })
+
+    it('drops malformed workspaceGroups entries on load', async () => {
+      const validGroup = {
+        id: 'group:abc',
+        workspaceName: 'daring_tiger',
+        displayName: 'daring_tiger',
+        parentPath: '/tmp/daring_tiger',
+        memberWorktreeIds: ['orca::/a'],
+        branchName: 'daring_tiger',
+        isArchived: false,
+        archivedAt: null,
+        isPinned: false,
+        sortOrder: 0,
+        lastActivityAt: 0,
+        isUnread: false,
+        comment: '',
+        createdAt: 1000,
+        linkedIssue: null,
+        linkedLinearIssue: null
+      }
+      writeDataFile({
+        schemaVersion: 1,
+        repos: [],
+        worktreeMeta: {},
+        settings: {},
+        ui: {},
+        githubCache: { pr: {}, issue: {} },
+        workspaceSession: {},
+        workspaceGroups: [validGroup, { id: 'group:bad' }]
+      })
+      const store = await createStore()
+      const groups = store.getWorkspaceGroups()
+      expect(groups).toHaveLength(1)
+      expect(groups[0].id).toBe('group:abc')
+    })
+  })
 })

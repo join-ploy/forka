@@ -26,6 +26,7 @@ import type {
   Repo,
   SparsePreset,
   WorktreeMeta,
+  WorkspaceGroup,
   GlobalSettings,
   OnboardingChecklistState,
   OnboardingOutcome,
@@ -45,6 +46,7 @@ import {
   ONBOARDING_FINAL_STEP
 } from '../shared/constants'
 import { parseWorkspaceSession } from '../shared/workspace-session-schema'
+import { parseWorkspaceGroups } from '../shared/workspace-group-schema'
 import { pruneLocalTerminalScrollbackBuffers } from '../shared/workspace-session-terminal-buffers'
 import { pruneWorkspaceSessionBrowserHistory } from '../shared/workspace-session-browser-history'
 import { getRepoIdFromWorktreeId, splitWorktreeId } from '../shared/worktree-id'
@@ -435,6 +437,7 @@ export class Store {
           automationAutoDedup: Array.isArray(parsed.automationAutoDedup)
             ? parsed.automationAutoDedup
             : [],
+          workspaceGroups: parseWorkspaceGroups(parsed.workspaceGroups),
           onboarding: (() => {
             // Why: if we successfully parsed an existing orca-data.json that
             // lacks an onboarding block, this is an upgrade-cohort user —
@@ -670,6 +673,10 @@ export class Store {
 
   getRepos(): Repo[] {
     return this.state.repos.map((repo) => this.hydrateRepo(repo))
+  }
+
+  getWorkspaceGroups(): WorkspaceGroup[] {
+    return this.state.workspaceGroups
   }
 
   /**
