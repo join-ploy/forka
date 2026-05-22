@@ -1,9 +1,12 @@
 import * as React from 'react'
+import { useAppStore } from '@/store'
 import type {
   TriggerConfig,
   AutoTrigger,
   TriggerSourceId
 } from '../../../../../shared/automations-types'
+import type { Repo } from '../../../../../shared/types'
+import { AutoTriggerCard } from './AutoTriggerCard'
 
 export type TriggersModalProps = {
   open: boolean
@@ -26,6 +29,12 @@ export function TriggersModal(props: TriggersModalProps): React.JSX.Element | nu
     props.autoTriggers
   )
   const [addOpen, setAddOpen] = React.useState(false)
+
+  const repos = useAppStore((s) => s.repos as Repo[])
+  const projects = React.useMemo(
+    () => repos.map((r) => ({ id: r.id, displayName: r.displayName })),
+    [repos]
+  )
 
   // Why: re-seed the draft each time the modal opens so a prior Cancel doesn't
   // bleed stale local edits into the next session.
@@ -160,20 +169,15 @@ export function TriggersModal(props: TriggersModalProps): React.JSX.Element | nu
           ) : (
             <ul className="mt-2 space-y-2">
               {draftAutoTriggers.map((t) => (
-                <li
-                  key={t.id}
-                  aria-label={`auto trigger ${t.id}`}
-                  className="flex items-center justify-between rounded border bg-card p-2 text-xs"
-                >
-                  <span>{t.source}</span>
-                  <button
-                    type="button"
-                    aria-label={`remove trigger ${t.id}`}
-                    onClick={() => removeTrigger(t.id)}
-                    className="rounded border border-border bg-background px-2 py-0.5 hover:bg-accent hover:text-foreground"
-                  >
-                    Remove
-                  </button>
+                <li key={t.id}>
+                  <AutoTriggerCard
+                    trigger={t}
+                    onChange={(next) =>
+                      setDraftAutoTriggers((arr) => arr.map((x) => (x.id === t.id ? next : x)))
+                    }
+                    onRemove={() => removeTrigger(t.id)}
+                    projects={projects}
+                  />
                 </li>
               ))}
             </ul>
