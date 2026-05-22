@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { Repo } from '../../shared/types'
-import type { Step } from '../../shared/automations-types'
+import type { AutoTrigger, Rule, Step } from '../../shared/automations-types'
+import type { CandidateEvent } from './trigger-sources/types'
 import { AutomationService } from './service'
 
 const testState = { dir: '' }
@@ -226,5 +227,125 @@ describe('AutomationService auto-trigger engine wiring', () => {
       service.start()
       service.stop()
     }).not.toThrow()
+  })
+})
+
+describe('AutomationService.dispatchAutoRun', () => {
+  beforeEach(() => {
+    testState.dir = mkdtempSync(join(tmpdir(), 'orca-automations-test-'))
+    // Why: do not fake timers here — the dispatch path fires the chain
+    // executor's tick asynchronously and we want the real microtask queue to
+    // drain so the test can read the final persisted run.
+  })
+
+  afterEach(() => {
+    rmSync(testState.dir, { recursive: true, force: true })
+  })
+
+  const makeChainStep = (): Step => ({
+    id: 's1',
+    kind: 'wait-for-setup',
+    // Why: literal worktreeId (no template) so the runner resolves it without
+    // needing any context wiring; with no setup-script registered the runner
+    // returns `done` immediately so the run completes in the background.
+    config: { worktreeRef: 'wt-stub', requireSuccess: false },
+    onFailure: 'halt',
+    timeoutSeconds: null
+  })
+
+  const makeEvent = (overrides: Partial<CandidateEvent> = {}): CandidateEvent => ({
+    entityId: 'iss-1',
+    entityIdentifier: 'ORC-1',
+    updatedAt: 100,
+    fields: {},
+    payload: {
+      issue: {
+        id: 'iss-1',
+        identifier: 'ORC-1',
+        title: 'A title',
+        description: 'desc',
+        url: 'https://linear.app/x/ORC-1',
+        assigneeEmail: 'me@example.com',
+        stateName: 'Todo',
+        priority: 2
+      }
+    },
+    ...overrides
+  })
+
+  const trigger: AutoTrigger = {
+    id: 'at1',
+    source: 'linear-issue',
+    enabled: true,
+    enabledAt: 0,
+    rules: []
+  }
+
+  it('creates a run with trigger=auto, rule projectId override, and full provenance metadata', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo({ id: 'p1' }))
+    store.addRepo(makeRepo({ id: 'p2', path: '/repo2' }))
+    const automation = store.createAutomation({
+      name: 'Auto chain',
+      prompt: '',
+      agentId: 'claude',
+      projectId: 'p1',
+      workspaceMode: 'new_per_run',
+      timezone: 'UTC',
+      rrule: '',
+      dtstart: 0,
+      trigger: { kind: 'manual' },
+      steps: [makeChainStep()]
+    })
+    const stored = store.listAutomations().find((entry) => entry.id === automation.id)!
+
+    const service = new AutomationService(store, { tickMs: 60_000 })
+    const rule: Rule = { id: 'rl1', projectId: 'p2', conditions: [] }
+    await service.dispatchAutoRun({ automation: stored, trigger, rule, event: makeEvent() })
+
+    const runs = store.listAutomationRuns(automation.id)
+    expect(runs).toHaveLength(1)
+    const [run] = runs
+    expect(run.trigger).toBe('auto')
+    expect(run.triggerSource).toBe('linear-issue')
+    expect(run.triggerAutoTriggerId).toBe('at1')
+    expect(run.triggerRuleId).toBe('rl1')
+    expect(run.triggerEntityId).toBe('iss-1')
+    const automationCtx = run.context?.automation as { projectId: string; workspaceId: unknown }
+    expect(automationCtx.projectId).toBe('p2')
+    const trigCtx = run.context?.trigger as { linear?: { issue: { identifier: string } } }
+    expect(trigCtx.linear?.issue.identifier).toBe('ORC-1')
+  })
+
+  it('omits trigger.linear when the event payload has no issue field', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo({ id: 'p1' }))
+    const automation = store.createAutomation({
+      name: 'Auto chain',
+      prompt: '',
+      agentId: 'claude',
+      projectId: 'p1',
+      workspaceMode: 'new_per_run',
+      timezone: 'UTC',
+      rrule: '',
+      dtstart: 0,
+      trigger: { kind: 'manual' },
+      steps: [makeChainStep()]
+    })
+    const stored = store.listAutomations().find((entry) => entry.id === automation.id)!
+
+    const service = new AutomationService(store, { tickMs: 60_000 })
+    const rule: Rule = { id: 'rl1', projectId: 'p1', conditions: [] }
+    await service.dispatchAutoRun({
+      automation: stored,
+      trigger,
+      rule,
+      event: makeEvent({ payload: {} })
+    })
+
+    const [run] = store.listAutomationRuns(automation.id)
+    const trigCtx = run.context?.trigger as Record<string, unknown>
+    expect(trigCtx).toBeDefined()
+    expect(trigCtx.linear).toBeUndefined()
   })
 })
