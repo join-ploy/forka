@@ -14,15 +14,15 @@ import { useAppStore } from '@/store'
  * card to see which member(s) refused.
  */
 export function runGroupArchive(groupId: string, displayName: string): void {
-  useAppStore
-    .getState()
-    .archiveGroup(groupId)
-    .then(() => {
-      toast.info(`Archived group "${displayName}"`)
-    })
-    .catch((err: unknown) => {
-      toast.error(`Failed to archive group "${displayName}"`, {
-        description: err instanceof Error ? err.message : String(err)
-      })
-    })
+  // Why: group archive awaits cleanup scripts in parallel across every member
+  // (see main/ipc/workspace-groups.ts), which can take real seconds — unlike
+  // worktree archive, which is a metadata flip with deferred cleanup. A
+  // promise toast gives the user immediate feedback that the action is in
+  // flight and auto-transitions to success/error on completion.
+  toast.promise(useAppStore.getState().archiveGroup(groupId), {
+    loading: `Archiving group "${displayName}"…`,
+    success: `Archived group "${displayName}"`,
+    error: (err: unknown) =>
+      `Failed to archive group "${displayName}": ${err instanceof Error ? err.message : String(err)}`
+  })
 }
