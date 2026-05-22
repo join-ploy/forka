@@ -147,6 +147,33 @@ describe('AutoTriggerEngine — dispatch, dedup, watermark, grouping', () => {
     expect(lastPollMap.get('linear-issue|h1')).toBe(5000)
   })
 
+  it('skips legacy (non-chain-shape) automations entirely — no dispatch, no dedup row', async () => {
+    // Why: regression test for the engine-side filter. Legacy automations
+    // (no `trigger`/`steps`) attached to an autoTrigger would otherwise burn
+    // a dedup row when dispatchAutoRun → dispatchRun rejected, blocking
+    // future fires for the same entity even though no run was ever created.
+    const automation = makeAutomation({
+      autoTriggers: [
+        {
+          id: 'at1',
+          source: 'linear-issue',
+          enabled: true,
+          enabledAt: 0,
+          rules: [makeRule({ id: 'r', projectId: 'p1' })]
+        }
+      ],
+      trigger: undefined,
+      steps: undefined
+    })
+    const { engine, dispatched, dedup } = makeEngine({
+      source: makeFakeSource([{ entityId: 'ORC-1', updatedAt: 1000, payload: {}, fields: {} }]),
+      automations: [automation]
+    })
+    await engine.tick()
+    expect(dispatched).toEqual([])
+    expect(dedup.size).toBe(0)
+  })
+
   it('first match wins across rules', async () => {
     const automation = makeAutomation({
       autoTriggers: [

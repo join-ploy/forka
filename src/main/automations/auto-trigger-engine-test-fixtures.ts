@@ -1,10 +1,22 @@
 import { AutoTriggerEngine } from './auto-trigger-engine'
 import type { AutoTriggerEngineDeps } from './auto-trigger-engine'
 import { TriggerSourceRegistry } from './trigger-sources/registry'
-import type { Automation, AutoTrigger, Rule } from '../../shared/automations-types'
+import type { Automation, AutoTrigger, Rule, Step } from '../../shared/automations-types'
 import type { CandidateEvent, TriggerSource } from './trigger-sources/types'
 
 export type DispatchedRecord = { automationId: string; ruleId: string; entityId: string }
+
+// Why: auto-trigger engine now skips non-chain-shape automations, so the
+// default fixture must carry a `trigger` + `steps` pair or every existing
+// test would silently filter out its automation. Tests that exercise the
+// legacy-shape branch explicitly override these to `undefined`.
+const defaultChainStep: Step = {
+  id: 's1',
+  kind: 'wait-for-setup',
+  config: { worktreeRef: 'wt-stub', requireSuccess: false },
+  onFailure: 'halt',
+  timeoutSeconds: null
+}
 
 export function makeAutomation(
   overrides: Partial<Automation> & { autoTriggers?: AutoTrigger[] } = {}
@@ -30,6 +42,8 @@ export function makeAutomation(
     missedRunGraceMinutes: 5,
     createdAt: 0,
     updatedAt: 0,
+    trigger: { kind: 'manual' },
+    steps: [defaultChainStep],
     ...overrides
   }
 }

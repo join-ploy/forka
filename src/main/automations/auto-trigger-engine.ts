@@ -67,6 +67,12 @@ export class AutoTriggerEngine {
       const automations = this.deps.listAutomations()
       const active: ActiveEntry[] = []
       for (const a of automations) {
+        // Why: auto-triggers require chain-shape automations (dispatchRun only
+        // supports those). Skip legacy automations entirely so we don't write
+        // dedup rows for runs we can't actually dispatch.
+        if (!a.trigger || !a.steps || a.steps.length === 0) {
+          continue
+        }
         for (const t of a.autoTriggers ?? []) {
           if (t.enabled) {
             active.push({ automation: a, trigger: t })
