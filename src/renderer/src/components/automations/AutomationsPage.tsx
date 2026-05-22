@@ -205,7 +205,11 @@ export default function AutomationsPage(): React.JSX.Element {
           // them through the create/update payload is what lets the editor save
           // a brand-new chain — without these the row would round-trip blank.
           trigger: automation.trigger,
-          steps: automation.steps
+          steps: automation.steps,
+          // Why: auto-triggers are stored alongside trigger/steps; without
+          // forwarding them through here the editor's "save" silently drops
+          // any auto-trigger rules the user just configured.
+          autoTriggers: automation.autoTriggers
         }
         await (existing
           ? window.api.automations.update({ id: existing.id, updates: payload })
