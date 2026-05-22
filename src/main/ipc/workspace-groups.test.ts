@@ -39,6 +39,7 @@ import type {
   CreateWorkspaceGroupArgs,
   CreateWorkspaceGroupResult,
   Repo,
+  WorkspaceGroup,
   Worktree
 } from '../../shared/types'
 
@@ -46,6 +47,8 @@ type Handler = (
   _event: unknown,
   args: CreateWorkspaceGroupArgs
 ) => Promise<CreateWorkspaceGroupResult>
+
+type AnyHandler = (_event: unknown, args: unknown) => Promise<unknown>
 
 function buildRepo(id: string, path: string): Repo {
   return {
@@ -450,5 +453,190 @@ describe('registerWorkspaceGroupHandlers — workspace-groups:create', () => {
     expect(createRemoteWorktree).not.toHaveBeenCalled()
     expect(store.setWorkspaceGroup).not.toHaveBeenCalled()
     expect(mkdirSyncMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('registerWorkspaceGroupHandlers — workspace-groups:archive', () => {
+  const mainWindow = {
+    isDestroyed: () => false,
+    webContents: { send: vi.fn() }
+  } as never
+  const runtime = {} as never
+  const handlers: Record<string, AnyHandler> = {}
+
+  const store = {
+    getRepo: vi.fn(),
+    getRepos: vi.fn(),
+    getSettings: vi.fn(),
+    setWorktreeMeta: vi.fn(),
+    setWorkspaceGroup: vi.fn(),
+    getWorkspaceGroups: vi.fn()
+  }
+
+  function makeGroup(overrides: Partial<WorkspaceGroup>): WorkspaceGroup {
+    return {
+      id: 'group:abc',
+      workspaceName: 'daring_tiger',
+      displayName: 'daring_tiger',
+      parentPath: '/workspace/daring_tiger',
+      memberWorktreeIds: ['repo-a::/workspace/daring_tiger/repo-a'],
+      branchName: 'daring_tiger',
+      isArchived: false,
+      archivedAt: null,
+      isPinned: false,
+      sortOrder: 0,
+      lastActivityAt: 0,
+      isUnread: false,
+      comment: '',
+      createdAt: 0,
+      linkedIssue: null,
+      linkedLinearIssue: null,
+      ...overrides
+    }
+  }
+
+  beforeEach(() => {
+    handleMock.mockReset()
+    removeHandlerMock.mockReset()
+    mkdirSyncMock.mockReset()
+    rmSyncMock.mockReset()
+    runWorktreeRemovalMock.mockReset()
+    runWorktreeRemovalMock.mockResolvedValue(undefined)
+    store.getRepo.mockReset()
+    store.getRepos.mockReset()
+    store.getSettings.mockReset()
+    store.setWorktreeMeta.mockReset()
+    store.setWorkspaceGroup.mockReset()
+    store.getWorkspaceGroups.mockReset()
+    for (const key of Object.keys(handlers)) {
+      delete handlers[key]
+    }
+
+    handleMock.mockImplementation((channel: string, handler: AnyHandler) => {
+      handlers[channel] = handler
+    })
+
+    store.setWorkspaceGroup.mockImplementation((group) => group)
+    store.getRepos.mockReturnValue([])
+  })
+
+  it('archives every member in parallel, removes parent folder, and flips isArchived', async () => {
+    const memberA = 'repo-a::/workspace/daring_tiger/repo-a'
+    const memberB = 'repo-b::/workspace/daring_tiger/repo-b'
+    const group = makeGroup({ memberWorktreeIds: [memberA, memberB] })
+    store.getWorkspaceGroups.mockReturnValue([group])
+
+    registerWorkspaceGroupHandlers(mainWindow, store as never, runtime)
+    const handler = handlers['workspace-groups:archive']
+    expect(handler).toBeDefined()
+
+    const before = Date.now()
+    const result = (await handler({}, { groupId: group.id })) as ReturnType<typeof makeGroup>
+    const after = Date.now()
+
+    // runWorktreeRemoval was called once per member with the right args.
+    expect(runWorktreeRemovalMock).toHaveBeenCalledTimes(2)
+    expect(runWorktreeRemovalMock).toHaveBeenCalledWith(
+      { worktreeId: memberA, force: false, skipArchive: false },
+      expect.objectContaining({ store, runtime, mainWindow })
+    )
+    expect(runWorktreeRemovalMock).toHaveBeenCalledWith(
+      { worktreeId: memberB, force: false, skipArchive: false },
+      expect.objectContaining({ store, runtime, mainWindow })
+    )
+
+    // Parent folder removed recursively after member cleanup.
+    expect(rmSyncMock).toHaveBeenCalledWith('/workspace/daring_tiger', {
+      recursive: true,
+      force: true
+    })
+
+    // Group was persisted exactly once (the archive flip), with the archive
+    // flags set and the cleanup error cleared.
+    expect(store.setWorkspaceGroup).toHaveBeenCalledTimes(1)
+    const persisted = store.setWorkspaceGroup.mock.calls[0][0] as ReturnType<typeof makeGroup>
+    expect(persisted.id).toBe(group.id)
+    expect(persisted.isArchived).toBe(true)
+    expect(persisted.archiveCleanupError).toBeNull()
+    expect(persisted.archivedAt).not.toBeNull()
+    expect(persisted.archivedAt as number).toBeGreaterThanOrEqual(before)
+    expect(persisted.archivedAt as number).toBeLessThanOrEqual(after)
+
+    // Handler returns the archived group so the renderer can update state
+    // without a follow-up list refresh.
+    expect(result.isArchived).toBe(true)
+    expect(result.id).toBe(group.id)
+  })
+
+  it('keeps the group unarchived and surfaces per-member errors when any cleanup rejects', async () => {
+    const memberA = 'repo-a::/workspace/daring_tiger/repo-a'
+    const memberB = 'repo-b::/workspace/daring_tiger/repo-b'
+    const group = makeGroup({ memberWorktreeIds: [memberA, memberB] })
+    store.getWorkspaceGroups.mockReturnValue([group])
+
+    const failure = new Error('boom: uncommitted changes in repo-b')
+    runWorktreeRemovalMock.mockImplementation(async ({ worktreeId }: { worktreeId: string }) => {
+      if (worktreeId === memberB) {
+        throw failure
+      }
+      return undefined
+    })
+
+    registerWorkspaceGroupHandlers(mainWindow, store as never, runtime)
+    const handler = handlers['workspace-groups:archive']
+
+    await expect(handler({}, { groupId: group.id })).rejects.toThrowError(
+      /repo-b.*uncommitted changes/i
+    )
+
+    // Both removals were attempted (Promise.allSettled), not short-circuited.
+    expect(runWorktreeRemovalMock).toHaveBeenCalledTimes(2)
+
+    // Parent folder is NOT removed on partial failure — the surviving members
+    // may still need their on-disk leaf for retry semantics.
+    expect(rmSyncMock).not.toHaveBeenCalled()
+
+    // Group was persisted once (the partial-state write) with the cleanup
+    // error stamped and isArchived still false.
+    expect(store.setWorkspaceGroup).toHaveBeenCalledTimes(1)
+    const persisted = store.setWorkspaceGroup.mock.calls[0][0] as ReturnType<typeof makeGroup>
+    expect(persisted.isArchived).toBe(false)
+    expect(persisted.archivedAt).toBeNull()
+    expect(persisted.archiveCleanupError).toContain(memberB)
+    expect(persisted.archiveCleanupError).toContain('uncommitted changes')
+  })
+
+  it('returns existing state without re-running cleanup when the group is already archived', async () => {
+    const memberA = 'repo-a::/workspace/daring_tiger/repo-a'
+    const group = makeGroup({
+      memberWorktreeIds: [memberA],
+      isArchived: true,
+      archivedAt: 123
+    })
+    store.getWorkspaceGroups.mockReturnValue([group])
+
+    registerWorkspaceGroupHandlers(mainWindow, store as never, runtime)
+    const handler = handlers['workspace-groups:archive']
+
+    const result = (await handler({}, { groupId: group.id })) as ReturnType<typeof makeGroup>
+
+    expect(runWorktreeRemovalMock).not.toHaveBeenCalled()
+    expect(store.setWorkspaceGroup).not.toHaveBeenCalled()
+    expect(rmSyncMock).not.toHaveBeenCalled()
+    expect(result).toBe(group)
+  })
+
+  it('rejects when the group id is unknown', async () => {
+    store.getWorkspaceGroups.mockReturnValue([])
+
+    registerWorkspaceGroupHandlers(mainWindow, store as never, runtime)
+    const handler = handlers['workspace-groups:archive']
+
+    await expect(handler({}, { groupId: 'group:missing' })).rejects.toThrowError(
+      /Workspace group not found: group:missing/
+    )
+
+    expect(runWorktreeRemovalMock).not.toHaveBeenCalled()
+    expect(store.setWorkspaceGroup).not.toHaveBeenCalled()
   })
 })

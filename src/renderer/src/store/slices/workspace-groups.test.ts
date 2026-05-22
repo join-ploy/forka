@@ -14,7 +14,8 @@ describe('workspace-groups slice', () => {
       api: {
         workspaceGroups: {
           list: vi.fn().mockResolvedValue([]),
-          create: vi.fn()
+          create: vi.fn(),
+          archive: vi.fn()
         }
       }
     }
@@ -80,6 +81,38 @@ describe('workspace-groups slice', () => {
     ;(window.api.workspaceGroups.list as ReturnType<typeof vi.fn>).mockResolvedValue([g])
     await useAppStore.getState().fetchWorkspaceGroups()
     expect(useAppStore.getState().workspaceGroups).toEqual([g])
+  })
+
+  it('archiveGroup calls the IPC and upserts the returned (archived) group', async () => {
+    const g = makeGroup('group:a', 'daring_tiger')
+    useAppStore.getState().setWorkspaceGroups([g])
+    const archived = { ...g, isArchived: true, archivedAt: 1234 }
+    ;(window.api.workspaceGroups.archive as ReturnType<typeof vi.fn>).mockResolvedValue(archived)
+
+    const result = await useAppStore.getState().archiveGroup('group:a')
+
+    expect(window.api.workspaceGroups.archive).toHaveBeenCalledWith({ groupId: 'group:a' })
+    expect(result).toEqual(archived)
+    expect(useAppStore.getState().workspaceGroups[0].isArchived).toBe(true)
+  })
+
+  it('archiveGroup rethrows and refreshes the list when the IPC rejects', async () => {
+    const g = makeGroup('group:a', 'daring_tiger')
+    useAppStore.getState().setWorkspaceGroups([g])
+    ;(window.api.workspaceGroups.archive as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('cleanup blocked: repo-b refused')
+    )
+    const blockedGroup = { ...g, archiveCleanupError: 'repo-b refused' }
+    ;(window.api.workspaceGroups.list as ReturnType<typeof vi.fn>).mockResolvedValue([blockedGroup])
+
+    await expect(useAppStore.getState().archiveGroup('group:a')).rejects.toThrowError(
+      /cleanup blocked/
+    )
+
+    // The slice refetches the list so the visible card shows the latest
+    // archiveCleanupError stamped by the main-process handler.
+    expect(window.api.workspaceGroups.list).toHaveBeenCalled()
+    expect(useAppStore.getState().workspaceGroups[0].archiveCleanupError).toBe('repo-b refused')
   })
 
   it('createGroup calls the IPC and upserts the result', async () => {

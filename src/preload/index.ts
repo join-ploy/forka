@@ -501,7 +501,9 @@ const api = {
   workspaceGroups: {
     list: (): Promise<WorkspaceGroup[]> => ipcRenderer.invoke('workspace-groups:list'),
     create: (args: CreateWorkspaceGroupArgs): Promise<CreateWorkspaceGroupResult> =>
-      ipcRenderer.invoke('workspace-groups:create', args)
+      ipcRenderer.invoke('workspace-groups:create', args),
+    archive: (args: { groupId: string }): Promise<WorkspaceGroup> =>
+      ipcRenderer.invoke('workspace-groups:archive', args)
   },
 
   pty: {

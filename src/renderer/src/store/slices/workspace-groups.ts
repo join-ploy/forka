@@ -13,6 +13,7 @@ export type WorkspaceGroupsSlice = {
   upsertWorkspaceGroup: (group: WorkspaceGroup) => void
   removeWorkspaceGroup: (id: string) => void
   createGroup: (args: CreateWorkspaceGroupArgs) => Promise<CreateWorkspaceGroupResult>
+  archiveGroup: (groupId: string) => Promise<WorkspaceGroup>
 }
 
 export const createWorkspaceGroupsSlice: StateCreator<AppState, [], [], WorkspaceGroupsSlice> = (
@@ -44,6 +45,33 @@ export const createWorkspaceGroupsSlice: StateCreator<AppState, [], [], Workspac
 
   removeWorkspaceGroup: (id) =>
     set((s) => ({ workspaceGroups: s.workspaceGroups.filter((g) => g.id !== id) })),
+
+  // Why: archive cascades through every member's runWorktreeRemoval in main.
+  // On success the main process returns the updated group; we upsert it so the
+  // visible Groups section drops the row and ArchivedSection picks it up
+  // without a follow-up list refresh. On failure (cleanup blocked) main also
+  // persists the per-member error string — refetch so the visible card shows
+  // the latest archiveCleanupError before we re-throw to the caller.
+  archiveGroup: async (groupId) => {
+    try {
+      const updated = await window.api.workspaceGroups.archive({ groupId })
+      set((s) => ({
+        workspaceGroups: s.workspaceGroups.map((g) => (g.id === updated.id ? updated : g))
+      }))
+      return updated
+    } catch (err) {
+      // Why: the handler stamps archiveCleanupError on the group before
+      // throwing, so a refresh here surfaces the per-member error in the UI
+      // even though the action itself rejected.
+      try {
+        const groups = await window.api.workspaceGroups.list()
+        set({ workspaceGroups: groups })
+      } catch (refreshErr) {
+        console.error('Failed to refresh workspace groups after archive error:', refreshErr)
+      }
+      throw err
+    }
+  },
 
   createGroup: async (args) => {
     try {

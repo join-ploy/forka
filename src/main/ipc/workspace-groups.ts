@@ -37,6 +37,90 @@ export function registerWorkspaceGroupHandlers(
   ipcMain.removeHandler('workspace-groups:list')
   ipcMain.handle('workspace-groups:list', (): WorkspaceGroup[] => store.getWorkspaceGroups())
 
+  ipcMain.removeHandler('workspace-groups:archive')
+  ipcMain.handle(
+    'workspace-groups:archive',
+    async (_event, args: { groupId: string }): Promise<WorkspaceGroup> => {
+      const existing = store.getWorkspaceGroups().find((g) => g.id === args.groupId)
+      if (!existing) {
+        throw new Error(`Workspace group not found: ${args.groupId}`)
+      }
+      // Why: archive is idempotent. A second click (or a retry after a partial
+      // success in a previous run that the user manually cleaned up) shouldn't
+      // re-run removal on already-gone members.
+      if (existing.isArchived) {
+        return existing
+      }
+
+      // Why (K1): fan out per-member archive in parallel via the shared
+      // runWorktreeRemoval helper. We keep skipArchive=false so the user's
+      // archive hook still fires inside each member, and force=false so the
+      // hook can refuse on dirty state — matching today's single-worktree
+      // archive cleanup semantics from cleanup-service.ts.
+      const memberIds = existing.memberWorktreeIds
+      const settled = await Promise.allSettled(
+        memberIds.map((worktreeId) =>
+          runWorktreeRemoval(
+            { worktreeId, force: false, skipArchive: false },
+            { store, runtime, mainWindow }
+          )
+        )
+      )
+
+      const failures: { worktreeId: string; reason: unknown }[] = []
+      settled.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          failures.push({ worktreeId: memberIds[index], reason: result.reason })
+        }
+      })
+
+      if (failures.length > 0) {
+        // Why (K2): all-or-nothing on the group flag — failed members keep the
+        // group in the unarchived list so the user can retry. Concatenate
+        // per-member errors into the single archiveCleanupError string the
+        // schema already carries; ArchivedSection.tsx surfaces this verbatim
+        // in the tooltip but groups stay in the visible list when not archived.
+        const errorSummary = failures
+          .map((f) => {
+            const message = f.reason instanceof Error ? f.reason.message : String(f.reason)
+            return `${f.worktreeId}: ${message}`
+          })
+          .join('; ')
+        const updated: WorkspaceGroup = {
+          ...existing,
+          archiveCleanupError: errorSummary
+        }
+        store.setWorkspaceGroup(updated)
+        throw new Error(
+          `Failed to archive workspace group "${existing.displayName}": ` +
+            `${failures.length} of ${memberIds.length} member(s) failed — ${errorSummary}`
+        )
+      }
+
+      // Why: every member's runWorktreeRemoval has already removed the leaf
+      // directory and deleted its WorktreeMeta, so the parent folder is now
+      // an empty shell that nothing else owns. rmSync is best-effort: a stray
+      // .DS_Store left by Finder shouldn't block the archive flip.
+      try {
+        rmSync(existing.parentPath, { recursive: true, force: true })
+      } catch (cleanupError) {
+        console.warn(
+          `[workspace-groups] archive: failed to remove parent folder ${existing.parentPath}:`,
+          cleanupError
+        )
+      }
+
+      const archived: WorkspaceGroup = {
+        ...existing,
+        isArchived: true,
+        archivedAt: Date.now(),
+        archiveCleanupError: null
+      }
+      store.setWorkspaceGroup(archived)
+      return archived
+    }
+  )
+
   ipcMain.removeHandler('workspace-groups:create')
 
   ipcMain.handle(

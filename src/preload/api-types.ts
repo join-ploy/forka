@@ -508,6 +508,7 @@ export type PreloadApi = {
   workspaceGroups: {
     list: () => Promise<WorkspaceGroup[]>
     create: (args: CreateWorkspaceGroupArgs) => Promise<CreateWorkspaceGroupResult>
+    archive: (args: { groupId: string }) => Promise<WorkspaceGroup>
   }
   pty: {
     spawn: (opts: {

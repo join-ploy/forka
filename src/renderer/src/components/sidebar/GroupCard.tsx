@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from 'react'
+import React, { useCallback, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '@/store'
 import { cn } from '@/lib/utils'
@@ -7,6 +7,14 @@ import { getMemberWorktreesForGroup, getRepoMapFromState } from '@/store/selecto
 import { groupIsRunning } from './group-aggregation'
 import { getWorktreeCardPrDisplay } from './worktree-card-pr-display'
 import { prStateLabel, branchDisplayName } from './WorktreeCardHelpers'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
+import { Trash2 } from 'lucide-react'
+import { runGroupArchive } from './archive-group-flow'
 
 export type GroupCardProps = {
   group: WorkspaceGroup
@@ -60,6 +68,22 @@ const GroupCard = React.memo(function GroupCard({ group, isActive = false }: Gro
     }
   }, [group.memberWorktreeIds, setActiveWorktree])
 
+  // Why: GroupCard owns its own right-click context menu rather than reusing
+  // WorktreeContextMenu — the worktree menu pulls in pin/rename/comment/issue
+  // actions that don't map to a group in v1, and the design doc lists only
+  // "Archive group" as the v1 group-level action. Keeping the menu small here
+  // means we can grow it (rename, pin) later without entangling the worktree
+  // menu's multi-select machinery.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [menuPoint, setMenuPoint] = useState({ x: 0, y: 0 })
+
+  const handleArchive = useCallback(() => {
+    setMenuOpen(false)
+    runGroupArchive(group.id, group.displayName)
+  }, [group.id, group.displayName])
+
+  const hasCleanupError = group.archiveCleanupError != null && group.archiveCleanupError !== ''
+
   return (
     <div
       role="button"
@@ -73,6 +97,12 @@ const GroupCard = React.memo(function GroupCard({ group, isActive = false }: Gro
           : 'border border-transparent hover:bg-sidebar-accent/40'
       )}
       onClick={handleClick}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        const bounds = e.currentTarget.getBoundingClientRect()
+        setMenuPoint({ x: e.clientX - bounds.left, y: e.clientY - bounds.top })
+        setMenuOpen(true)
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
@@ -135,6 +165,41 @@ const GroupCard = React.memo(function GroupCard({ group, isActive = false }: Gro
           })}
         </div>
       )}
+
+      {/* Why: surface the last archive-cleanup failure inline so the user can
+          see which member(s) blocked the cascade without leaving the visible
+          Groups list. ArchivedSection renders the same string for archived
+          rows; this is the unarchived-but-blocked counterpart. */}
+      {hasCleanupError && (
+        <div
+          data-testid="group-archive-cleanup-error"
+          title={group.archiveCleanupError ?? undefined}
+          className="text-[11px] text-destructive truncate"
+        >
+          Archive blocked: {group.archiveCleanupError}
+        </div>
+      )}
+
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen} modal={false}>
+        <DropdownMenuTrigger asChild>
+          <button
+            aria-hidden
+            tabIndex={-1}
+            className="pointer-events-none absolute size-px opacity-0"
+            style={{ left: menuPoint.x, top: menuPoint.y }}
+          />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent className="w-52" sideOffset={0} align="start">
+          <DropdownMenuItem
+            variant="destructive"
+            onSelect={handleArchive}
+            data-testid="group-card-archive-action"
+          >
+            <Trash2 className="size-3.5" />
+            Archive Group
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   )
 })

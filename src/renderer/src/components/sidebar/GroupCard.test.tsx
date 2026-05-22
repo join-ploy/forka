@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { PRInfo, Repo, WorkspaceGroup, Worktree } from '../../../../shared/types'
 import type { CacheEntry } from '@/store/slices/github'
 import type { WorktreeScriptsEntry } from '@/store/slices/scripts'
@@ -32,6 +32,11 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@/store', () => ({
   useAppStore: <T,>(selector: (state: StoreState) => T): T => selector(mocks.state)
+}))
+
+const runGroupArchiveMock = vi.fn()
+vi.mock('./archive-group-flow', () => ({
+  runGroupArchive: (id: string, name: string) => runGroupArchiveMock(id, name)
 }))
 
 import GroupCard from './GroupCard'
@@ -127,6 +132,7 @@ describe('<GroupCard />', () => {
   beforeEach(() => {
     cleanup()
     mocks.state.setActiveWorktree.mockClear()
+    runGroupArchiveMock.mockClear()
     seed({ worktrees: [], repos: [], groups: [] })
   })
 
@@ -199,6 +205,43 @@ describe('<GroupCard />', () => {
     const row = screen.getByTestId('group-member-row')
     expect(row.textContent).toContain('#123')
     expect(row.textContent).toContain('open')
+  })
+
+  it('right-click → Archive Group fires runGroupArchive with the group id', () => {
+    const wt = makeWorktree({ id: 'wt-orca', repoId: 'repo-orca' })
+    const repo = makeRepo({ id: 'repo-orca', displayName: 'orca' })
+    const group = makeGroup({
+      id: 'group:1',
+      displayName: 'daring_tiger',
+      memberWorktreeIds: [wt.id]
+    })
+    seed({ worktrees: [wt], repos: [repo], groups: [group] })
+
+    render(<GroupCard group={group} />)
+
+    const card = screen.getByTestId('group-card')
+    fireEvent.contextMenu(card)
+
+    const archiveItem = screen.getByTestId('group-card-archive-action')
+    fireEvent.click(archiveItem)
+
+    expect(runGroupArchiveMock).toHaveBeenCalledWith('group:1', 'daring_tiger')
+  })
+
+  it('renders the archive-cleanup error inline when one is stamped on the group', () => {
+    const wt = makeWorktree({ id: 'wt-orca', repoId: 'repo-orca' })
+    const repo = makeRepo({ id: 'repo-orca', displayName: 'orca' })
+    const group = makeGroup({
+      id: 'group:1',
+      memberWorktreeIds: [wt.id],
+      archiveCleanupError: 'repo-b refused: dirty tree'
+    })
+    seed({ worktrees: [wt], repos: [repo], groups: [group] })
+
+    render(<GroupCard group={group} />)
+
+    const errorRow = screen.getByTestId('group-archive-cleanup-error')
+    expect(errorRow.textContent).toContain('repo-b refused')
   })
 
   it('shows a running indicator when at least one member has a running run script', () => {
