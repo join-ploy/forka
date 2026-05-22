@@ -11,8 +11,14 @@ import type {
   AutomationDispatchRequest,
   AutomationDispatchResult,
   AutomationRun,
-  RunNowPayload
+  AutomationRunTrigger,
+  AutoTrigger,
+  LinearIssuePayload,
+  Rule,
+  RunNowPayload,
+  TriggerSourceId
 } from '../../shared/automations-types'
+import type { CandidateEvent } from './trigger-sources/types'
 import type { AgentStatusEntry } from '../agent-status/registry'
 import type { SetupScriptEntry } from '../setup-script/registry'
 import type { PtyExitEntry } from '../pty/exit-registry'
@@ -296,60 +302,117 @@ export class AutomationService {
     if (!automation) {
       throw new Error('Automation not found.')
     }
-    // Chain-shape automation: seed the run as `running` with an empty
-    // stepStates array and tick the executor once immediately so the UI sees
-    // progress without waiting a full tick cadence. Subsequent ticks fall
-    // through the normal 60s evaluateDueRuns() loop.
+    // Chain-shape automation: dispatch via the shared internal path so manual
+    // and auto-triggered runs follow the same persistence + tick contract.
     if (automation.trigger && automation.steps && automation.steps.length > 0) {
-      // Why: build the trigger context up-front (before persisting the run) so
-      // a missing project fails fast — operators see a clear error instead of
-      // a phantom `running` row with an unresolved template downstream.
-      const triggerContext = this.buildTriggerContext(payload)
-      // Why: when the trigger accepts a project at run time, the operator's
-      // selection replaces automation.projectId for this run so downstream
-      // create-worktree steps target the picked repo.
-      const runProjectId = payload?.projectId ?? automation.projectId
-      const run = this.store.createAutomationRun(automation, Date.now(), 'manual')
-      run.status = 'running'
-      // Seed the chain context with automation metadata so templates like
-      // `{{automation.workspaceId}}` resolve on the very first tick, and so
-      // CreateWorktreeRunner can pick up the target repo from
-      // `context.automation.projectId` (it's the only path it knows to look at).
-      run.context = {
-        automation: {
-          workspaceId: automation.workspaceId,
-          projectId: runProjectId
-        },
-        trigger: triggerContext
-      }
-      run.stepStates = []
-      this.store.replaceAutomationRun(run)
-      this.broadcastAutomationsChanged()
-      // Why: fire-and-forget the initial tick so the renderer's "Run Now"
-      // modal can close immediately. The run is already persisted as
-      // `running`, so the UI sees progress on the next refresh; tick failures
-      // route through `finalizeFailedRun` and become a `failed` row that the
-      // operator will see in the run list. Awaiting the tick used to block
-      // the modal for the full duration of the synchronous step chain
-      // (create-worktree + setup-script spawn + open-prompt-pane round-trip).
-      //
-      // Track the run as in-flight so the scheduler loop (`tickRunningChains`)
-      // doesn't pick it up concurrently and double-fire a step's side effects.
-      this.inFlightRunIds.add(run.id)
-      void this.chainExecutor
-        .tick(automation, run)
-        .catch((e) => {
-          this.finalizeFailedRun(run, e)
-        })
-        .finally(() => {
-          this.inFlightRunIds.delete(run.id)
-        })
-      return this.store.getAutomationRun(run.id) ?? run
+      return this.dispatchRun({ automation, payload })
     }
     // Legacy automation: same dispatch flow as scheduled runs.
     const run = this.store.createAutomationRun(automation, Date.now(), 'manual')
     await this.requestDispatch(automation, run)
     return run
+  }
+
+  /** Shared chain-shape dispatch path. Builds the run row + context, persists
+   *  it as `running`, broadcasts the change, then fires the first executor
+   *  tick fire-and-forget. Reused by `runNow` (manual) and `dispatchAutoRun`
+   *  (auto). Legacy automations stay on the `requestDispatch` flow. */
+  private async dispatchRun(args: {
+    automation: Automation
+    payload?: RunNowPayload
+    triggerOverrides?: {
+      kind?: AutomationRunTrigger
+      triggerSource?: TriggerSourceId
+      triggerAutoTriggerId?: string
+      triggerRuleId?: string
+      triggerEntityId?: string
+      restartedFromRunId?: string
+    }
+  }): Promise<AutomationRun> {
+    const { automation, payload, triggerOverrides } = args
+    if (!automation.trigger || !automation.steps || automation.steps.length === 0) {
+      throw new Error('dispatchRun only supports chain-shape automations')
+    }
+    // Why: build the trigger context up-front (before persisting the run) so
+    // a missing project fails fast — operators see a clear error instead of
+    // a phantom `running` row with an unresolved template downstream.
+    const triggerContext = this.buildTriggerContext(payload)
+    // Why: when the trigger accepts a project at run time, the operator's
+    // selection (or the auto-trigger rule's projectId) replaces
+    // automation.projectId for this run so downstream create-worktree steps
+    // target the picked repo.
+    const runProjectId = payload?.projectId ?? automation.projectId
+    const kind = triggerOverrides?.kind ?? 'manual'
+    const run = this.store.createAutomationRun(automation, Date.now(), kind, {
+      triggerSource: triggerOverrides?.triggerSource,
+      triggerAutoTriggerId: triggerOverrides?.triggerAutoTriggerId,
+      triggerRuleId: triggerOverrides?.triggerRuleId,
+      triggerEntityId: triggerOverrides?.triggerEntityId,
+      restartedFromRunId: triggerOverrides?.restartedFromRunId
+    })
+    run.status = 'running'
+    // Seed the chain context with automation metadata so templates like
+    // `{{automation.workspaceId}}` resolve on the very first tick, and so
+    // CreateWorktreeRunner can pick up the target repo from
+    // `context.automation.projectId` (it's the only path it knows to look at).
+    run.context = {
+      automation: {
+        workspaceId: automation.workspaceId,
+        projectId: runProjectId
+      },
+      trigger: triggerContext
+    }
+    run.stepStates = []
+    this.store.replaceAutomationRun(run)
+    this.broadcastAutomationsChanged()
+    // Why: fire-and-forget the initial tick so the caller (Run Now modal or
+    // auto-trigger engine) doesn't block on the full step chain. The run is
+    // already persisted as `running`, so the UI sees progress on the next
+    // refresh; tick failures route through `finalizeFailedRun`. Track the
+    // run as in-flight so `tickRunningChains` can't double-fire its steps.
+    this.inFlightRunIds.add(run.id)
+    void this.chainExecutor
+      .tick(automation, run)
+      .catch((e) => {
+        this.finalizeFailedRun(run, e)
+      })
+      .finally(() => {
+        this.inFlightRunIds.delete(run.id)
+      })
+    return this.store.getAutomationRun(run.id) ?? run
+  }
+
+  /** Bridge from the AutoTriggerEngine into the chain dispatch path. Maps the
+   *  engine's CandidateEvent into the same `RunNowPayload` shape manual runs
+   *  use, then stamps the trigger provenance metadata on the run row. */
+  async dispatchAutoRun(args: {
+    automation: Automation
+    trigger: AutoTrigger
+    rule: Rule
+    event: CandidateEvent
+  }): Promise<void> {
+    const { automation, trigger, rule, event } = args
+    // Why: Linear source emits the LinearIssuePayload-shaped object under
+    // `payload.issue`; reuse it verbatim so downstream templates resolve the
+    // same `{{trigger.linear.issue.*}}` paths manual runs already use. Other
+    // sources (none yet) would omit `issue` and the run's trigger context
+    // simply won't have a `linear` field.
+    const linearPayload = (event.payload as { issue?: LinearIssuePayload }).issue
+    const runPayload: RunNowPayload = {
+      projectId: rule.projectId,
+      ...(linearPayload ? { linear: { issue: linearPayload } } : {})
+    }
+    await this.dispatchRun({
+      automation,
+      payload: runPayload,
+      triggerOverrides: {
+        kind: 'auto',
+        triggerSource: trigger.source,
+        triggerAutoTriggerId: trigger.id,
+        triggerRuleId: rule.id,
+        triggerEntityId: event.entityId
+      }
+    })
   }
 
   private buildTriggerContext(payload?: RunNowPayload): Record<string, unknown> {

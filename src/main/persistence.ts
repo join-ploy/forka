@@ -14,7 +14,8 @@ import type {
   AutomationDispatchResult,
   AutomationRun,
   AutomationRunTrigger,
-  AutomationUpdateInput
+  AutomationUpdateInput,
+  TriggerSourceId
 } from '../shared/automations-types'
 import {
   latestAutomationOccurrenceAtOrBefore,
@@ -933,7 +934,14 @@ export class Store {
   createAutomationRun(
     automation: Automation,
     scheduledFor: number,
-    trigger: AutomationRunTrigger = 'scheduled'
+    trigger: AutomationRunTrigger = 'scheduled',
+    metadata?: {
+      triggerSource?: TriggerSourceId
+      triggerAutoTriggerId?: string
+      triggerRuleId?: string
+      triggerEntityId?: string
+      restartedFromRunId?: string
+    }
   ): AutomationRun {
     const existing = (this.state.automationRuns ?? []).find(
       (run) => run.automationId === automation.id && run.scheduledFor === scheduledFor
@@ -945,6 +953,8 @@ export class Store {
     const runNumber =
       (this.state.automationRuns ?? []).filter((run) => run.automationId === automation.id).length +
       1
+    // Why: spread only defined metadata keys so the persisted JSON stays tidy
+    // for scheduled/manual runs that have no auto-trigger provenance.
     const run: AutomationRun = {
       id: randomUUID(),
       automationId: automation.id,
@@ -959,7 +969,14 @@ export class Store {
       error: null,
       startedAt: null,
       dispatchedAt: null,
-      createdAt: now
+      createdAt: now,
+      ...(metadata?.triggerSource ? { triggerSource: metadata.triggerSource } : {}),
+      ...(metadata?.triggerAutoTriggerId
+        ? { triggerAutoTriggerId: metadata.triggerAutoTriggerId }
+        : {}),
+      ...(metadata?.triggerRuleId ? { triggerRuleId: metadata.triggerRuleId } : {}),
+      ...(metadata?.triggerEntityId ? { triggerEntityId: metadata.triggerEntityId } : {}),
+      ...(metadata?.restartedFromRunId ? { restartedFromRunId: metadata.restartedFromRunId } : {})
     }
     this.state.automationRuns = [...(this.state.automationRuns ?? []), run]
     this.flush()

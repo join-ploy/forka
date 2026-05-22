@@ -272,6 +272,64 @@ describe('Store', () => {
     expect(second.title).toBe('Nightly run 2')
   })
 
+  it('createAutomationRun records trigger metadata when provided', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const automation = store.createAutomation({
+      name: 'Auto trigger',
+      prompt: 'Handle issue',
+      agentId: 'claude',
+      projectId: 'r1',
+      workspaceMode: 'new_per_run',
+      timezone: 'UTC',
+      rrule: '',
+      dtstart: 0
+    })
+
+    const run = store.createAutomationRun(automation, Date.now(), 'auto', {
+      triggerSource: 'linear-issue',
+      triggerAutoTriggerId: 'at1',
+      triggerRuleId: 'rl1',
+      triggerEntityId: 'iss-9'
+    })
+
+    expect(run.trigger).toBe('auto')
+    expect(run.triggerSource).toBe('linear-issue')
+    expect(run.triggerAutoTriggerId).toBe('at1')
+    expect(run.triggerRuleId).toBe('rl1')
+    expect(run.triggerEntityId).toBe('iss-9')
+
+    const [persisted] = store.listAutomationRuns(automation.id)
+    expect(persisted.triggerSource).toBe('linear-issue')
+    expect(persisted.triggerAutoTriggerId).toBe('at1')
+    expect(persisted.triggerRuleId).toBe('rl1')
+    expect(persisted.triggerEntityId).toBe('iss-9')
+  })
+
+  it('createAutomationRun omits metadata fields when none are provided', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const automation = store.createAutomation({
+      name: 'Nightly',
+      prompt: 'Run checks',
+      agentId: 'claude',
+      projectId: 'r1',
+      workspaceMode: 'existing',
+      workspaceId: 'wt1',
+      timezone: 'UTC',
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: new Date('2026-05-13T00:00:00Z').getTime()
+    })
+
+    const run = store.createAutomationRun(automation, Date.now())
+
+    expect(run.triggerSource).toBeUndefined()
+    expect(run.triggerAutoTriggerId).toBeUndefined()
+    expect(run.triggerRuleId).toBeUndefined()
+    expect(run.triggerEntityId).toBeUndefined()
+    expect(run.restartedFromRunId).toBeUndefined()
+  })
+
   // ── 3. Corrupt JSON → falls back to defaults ────────────────────────
 
   it('falls back to defaults when data file contains invalid JSON', async () => {
