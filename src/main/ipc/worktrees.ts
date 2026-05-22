@@ -37,6 +37,8 @@ import { track } from '../telemetry/client'
 import { getCohortAtEmit } from '../telemetry/cohort-classifier'
 import { workspaceSourceSchema, type WorkspaceSource } from '../../shared/telemetry-events'
 import { classifyWorkspaceCreateError } from './workspace-create-error-classifier'
+import { WORKTREE_ID_SEPARATOR } from '../../shared/worktree-id'
+import { findGroupForWorktree, resolveGroupRepoNames } from '../workspace-group-runtime'
 
 // Why: worktrees discovered on disk (not created via Orca's UI) have no
 // persisted WorktreeMeta, so mergeWorktree falls back to `lastActivityAt: 0`.
@@ -498,7 +500,22 @@ export function registerWorktreeHandlers(
         throw new Error(`Repo not found: ${args.repoId}`)
       }
 
-      return createIssueCommandRunnerScript(repo, args.worktreePath, args.command)
+      // Why: rebuild the canonical worktreeId encoding (`<repoId>::<path>`)
+      // so we can look up an enclosing group and forward
+      // workspaceName/CONDUCTOR_WORKSPACE_REPOS into the issue-command
+      // wrapper alongside setup/run/archive.
+      const worktreeId = `${args.repoId}${WORKTREE_ID_SEPARATOR}${args.worktreePath}`
+      const workspaceName = store.getWorktreeMeta(worktreeId)?.workspaceName
+      const group = findGroupForWorktree(worktreeId, store.getWorkspaceGroups())
+      const groupRepos = group ? resolveGroupRepoNames(group) : undefined
+
+      return createIssueCommandRunnerScript(
+        repo,
+        args.worktreePath,
+        args.command,
+        workspaceName,
+        groupRepos
+      )
     }
   )
 

@@ -1939,6 +1939,8 @@ describe('OrcaRuntimeService', () => {
       TEST_WORKTREE_PATH,
       expect.objectContaining({ id: TEST_REPO_ID, path: TEST_REPO_PATH }),
       undefined,
+      undefined,
+      // groupRepos: undefined because this worktree is not in a group.
       undefined
     )
     expect(removeWorktree).toHaveBeenCalledWith(TEST_REPO_PATH, TEST_WORKTREE_PATH, false)

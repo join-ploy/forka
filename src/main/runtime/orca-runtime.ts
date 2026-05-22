@@ -134,6 +134,7 @@ import {
   runHook,
   shouldRunSetupForCreate
 } from '../hooks'
+import { findGroupForWorktree, resolveGroupRepoNames } from '../workspace-group-runtime'
 import { killSetupForWorktree, runSetup } from '../ipc/setup-script'
 import { killRunForWorktree } from '../ipc/run-script'
 import { REPO_COLORS } from '../../shared/constants'
@@ -197,6 +198,9 @@ type RuntimeStore = {
   setWorktreeMeta: Store['setWorktreeMeta']
   removeWorktreeMeta: Store['removeWorktreeMeta']
   getGitHubCache: Store['getGitHubCache']
+  // Why: optional so existing test mocks that don't need grouped-workspaces
+  // behavior can omit this without re-shaping every fixture.
+  getWorkspaceGroups?: Store['getWorkspaceGroups']
   getWorkspaceSession?: Store['getWorkspaceSession']
   getSettings(): {
     workspaceDir: string
@@ -3916,7 +3920,22 @@ export class OrcaRuntimeService {
           )
         }
       } else {
-        void runHook('setup', worktreePath, repo, worktreePath, workspaceName).then((result) => {
+        // Why: grouped workspaces publish their sibling repos as
+        // $CONDUCTOR_WORKSPACE_REPOS so setup hooks can fan out across the
+        // group on initial create as well.
+        const setupGroup = findGroupForWorktree(
+          worktree.id,
+          this.store.getWorkspaceGroups?.() ?? []
+        )
+        const setupGroupRepos = setupGroup ? resolveGroupRepoNames(setupGroup) : undefined
+        void runHook(
+          'setup',
+          worktreePath,
+          repo,
+          worktreePath,
+          workspaceName,
+          setupGroupRepos
+        ).then((result) => {
           if (!result.success) {
             console.error(`[hooks] setup hook failed for ${worktreePath}:`, result.output)
           }
@@ -4405,7 +4424,21 @@ export class OrcaRuntimeService {
       // Why: forward workspaceName so the archive hook sees
       // $CONDUCTOR_WORKSPACE_NAME — same convention setup/run use.
       const archiveWorkspaceName = this.store.getWorktreeMeta(worktree.id)?.workspaceName
-      const result = await runHook('archive', worktree.path, repo, undefined, archiveWorkspaceName)
+      // Why: grouped worktrees also surface their sibling repos via
+      // $CONDUCTOR_WORKSPACE_REPOS for cross-repo archive cleanup.
+      const archiveGroup = findGroupForWorktree(
+        worktree.id,
+        this.store.getWorkspaceGroups?.() ?? []
+      )
+      const archiveGroupRepos = archiveGroup ? resolveGroupRepoNames(archiveGroup) : undefined
+      const result = await runHook(
+        'archive',
+        worktree.path,
+        repo,
+        undefined,
+        archiveWorkspaceName,
+        archiveGroupRepos
+      )
       if (!result.success) {
         console.error(`[hooks] archive hook failed for ${worktree.path}:`, result.output)
       }

@@ -137,7 +137,8 @@ describe('handleSetupStart', () => {
       repo,
       worktreePath,
       'pnpm install',
-      'wise_panther'
+      'wise_panther',
+      undefined
     )
     const spawnArgs = provider.spawn.mock.calls[0][0] as {
       cwd?: string
