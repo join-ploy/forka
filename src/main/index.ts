@@ -651,22 +651,23 @@ app.whenReady().then(async () => {
   // TODO(persist): in-memory until we add a per-source watermark table to the
   // settings store; restart falls back to enabledAt and re-polls any backlog.
   const autoTriggerWatermarks = new Map<string, number>()
-  // Why: the engine is constructed so the Linear source is available to the
-  // renderer (via Phase 9's IPC), but it is NOT yet passed to AutomationService.
-  // Phase 7 will wire dispatchAutoRun to the real auto-run dispatch path and
-  // activate the engine. Activating before Phase 7 would silently burn dedup
-  // rows on every matched issue.
+  // Why: dispatchAutoRun lives on AutomationService but the engine needs it as
+  // a ctor dep — late-bind via serviceRef so both can coexist. The engine's
+  // start/stop lifecycle is owned by AutomationService.start()/stop() so the
+  // service receives the engine as an opt below.
+  let serviceRef: AutomationService | null = null
   const autoTriggerEngine = new AutoTriggerEngine({
     registry: triggerSourceRegistry,
     listAutomations: () => storeRef.listAutomations(),
-    dispatchAutoRun: ({ automation, trigger, rule, event }) => {
-      // TODO(Phase 7): wire to service.dispatchAutoRun
-      console.info('[auto-trigger] would dispatch', {
-        automationId: automation.id,
-        triggerId: trigger.id,
-        ruleId: rule.id,
-        entityId: event.entityId
-      })
+    dispatchAutoRun: async ({ automation, trigger, rule, event }) => {
+      if (!serviceRef) {
+        // Why: defensive — the engine is started by service.start() so this
+        // branch should be unreachable in practice. Log and skip rather than
+        // throw so a single missed wiring doesn't crash the tick loop.
+        console.warn('[auto-trigger] dispatchAutoRun called before service init')
+        return
+      }
+      await serviceRef.dispatchAutoRun({ automation, trigger, rule, event })
     },
     dedupHas: (a, t, e) => storeRef.hasAutomationAutoDedup(a, t, e),
     dedupInsert: (automationId, autoTriggerId, sourceId, entityId, entityIdentifier, firedAt) => {
@@ -687,10 +688,8 @@ app.whenReady().then(async () => {
     hostId: AUTO_TRIGGER_HOST_ID,
     now: () => Date.now()
   })
-  // Why: reference the engine to keep it alive without activating it. Phase 7
-  // will replace this with `autoTriggerEngine,` once dispatchAutoRun is wired.
-  void autoTriggerEngine
   automations = new AutomationService(store, {
+    autoTriggerEngine,
     getAutoTriggerPollIntervalSeconds: () => storeRef.getAutomationsPollIntervalSeconds(),
     // Why: hand the registry's reader to the service so the chain executor
     // can construct RunPromptRunner with main-process status access.
@@ -763,6 +762,11 @@ app.whenReady().then(async () => {
     getWebContents: () => mainWindow?.webContents ?? null,
     getIpcMain: () => ipcMain
   })
+  // Why: complete the late-bind so the engine's dispatchAutoRun closure can
+  // route into the now-constructed AutomationService. start() may fire the
+  // engine timer immediately, but the first poll won't run until the engine's
+  // setInterval cadence elapses, so this assignment lands before any dispatch.
+  serviceRef = automations
   runtime.setAccountServices({ claudeAccounts, codexAccounts, rateLimits })
   starNag = new StarNagService(store, stats)
   starNag.start()
