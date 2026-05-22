@@ -43,6 +43,11 @@ describe('AutoTriggerEngine — mutex, error isolation, timer lifecycle', () => 
     const { engine, dispatched } = makeEngine({ source: slowSource, automations: [automation] })
 
     const firstTick = engine.tick()
+    // Why: the mutex is enforced by the synchronous `this.ticking = true` at
+    // the top of tick() — `secondTick` would observe it `true` even without
+    // the awaits. The gate-pause + microtask drains are belt-and-suspenders
+    // so the test also exercises the scenario where the FIRST tick is
+    // genuinely mid-flight when the SECOND tick is invoked.
     await Promise.resolve()
     await Promise.resolve()
     const secondTick = engine.tick()
@@ -153,6 +158,87 @@ describe('AutoTriggerEngine — mutex, error isolation, timer lifecycle', () => 
     await engine.tick()
     expect(errors.length).toBe(1)
     expect(errors[0].where).toMatch(/linear-issue/)
+  })
+
+  it('mid-stream iterator rejection: prior events dispatched, watermark NOT advanced', async () => {
+    // Why: covers the case where a source yields one event successfully then
+    // its iterator rejects on the next pull (e.g. pagination fails on page 2).
+    // The rejection escapes pollSource's per-event try/catch and is caught by
+    // the per-source try/catch in tick(), which skips the lastPollSet call —
+    // so the watermark stays put and a retry re-polls from the same `since`.
+    const errors: { where: string }[] = []
+    const dispatched: DispatchedRecord[] = []
+    const dedup = new Set<string>()
+    const lastPollMap = new Map<string, number>()
+
+    const automation = makeAutomation({
+      autoTriggers: [
+        {
+          id: 'at1',
+          source: 'linear-issue',
+          enabled: true,
+          enabledAt: 0,
+          rules: [makeRule({ id: 'r', projectId: 'p1' })]
+        }
+      ]
+    })
+
+    let phase = 0
+    const flakySource: TriggerSource = {
+      id: 'linear-issue',
+      displayName: 'L',
+      fieldCatalog: [],
+      poll: () =>
+        ({
+          [Symbol.asyncIterator]() {
+            return this
+          },
+          next(): Promise<IteratorResult<CandidateEvent>> {
+            phase += 1
+            if (phase === 1) {
+              return Promise.resolve({
+                value: { entityId: 'ORC-1', updatedAt: 1000, payload: {}, fields: {} },
+                done: false
+              })
+            }
+            return Promise.reject(new Error('mid-stream'))
+          }
+        }) as AsyncIterableIterator<CandidateEvent>
+    }
+
+    const registry = new TriggerSourceRegistry()
+    registry.register(flakySource)
+
+    const engine = new AutoTriggerEngine({
+      registry,
+      listAutomations: () => [automation],
+      dispatchAutoRun: ({ automation: a, rule, event }) => {
+        dispatched.push({ automationId: a.id, ruleId: rule.id, entityId: event.entityId })
+      },
+      dedupHas: (a, t, e) => dedup.has(`${a}|${t}|${e}`),
+      dedupInsert: (a, t, _s, e) => {
+        dedup.add(`${a}|${t}|${e}`)
+      },
+      lastPoll: (s, h) => lastPollMap.get(`${s}|${h}`) ?? 0,
+      lastPollSet: (s, h, v) => {
+        lastPollMap.set(`${s}|${h}`, v)
+      },
+      hostId: 'h1',
+      now: () => 5000,
+      onError: (where) => {
+        errors.push({ where })
+      }
+    })
+
+    await engine.tick()
+
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0]).toMatchObject({ entityId: 'ORC-1' })
+    expect(dedup.has('a1|at1|ORC-1')).toBe(true)
+    expect(errors).toHaveLength(1)
+    expect(errors[0].where).toMatch(/linear-issue/)
+    // Watermark NOT advanced — source failed mid-stream, so retry re-polls from since.
+    expect(lastPollMap.get('linear-issue|h1')).toBeUndefined()
   })
 
   it('start() schedules tick on interval; stop() clears it', async () => {
