@@ -36,13 +36,16 @@ export function registerAutomationHandlers(store: Store, service: AutomationServ
   )
   ipcMain.handle(
     'automations:cancelRun',
-    (_event, args: { runId: string }): AutomationRun | null =>
-      service.cancelRun(args.runId) ?? null
+    (_event, args: { runId: string }): AutomationRun | null => service.cancelRun(args.runId) ?? null
   )
   ipcMain.handle(
     'automations:retryRunFromStep',
     (_event, args: { runId: string; stepIndex: number }): AutomationRun | null =>
       service.retryRunFromStep(args.runId, args.stepIndex) ?? null
+  )
+  ipcMain.handle(
+    'automations:restartRun',
+    (_event, args: { runId: string }): Promise<AutomationRun> => service.restartRun(args.runId)
   )
   ipcMain.handle(
     'automations:markDispatchResult',

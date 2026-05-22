@@ -2468,6 +2468,8 @@ const api = {
       ipcRenderer.invoke('automations:cancelRun', args),
     retryRunFromStep: (args: { runId: string; stepIndex: number }): Promise<AutomationRun | null> =>
       ipcRenderer.invoke('automations:retryRunFromStep', args),
+    restartRun: (args: { runId: string }): Promise<AutomationRun> =>
+      ipcRenderer.invoke('automations:restartRun', args),
     markDispatchResult: (result: AutomationDispatchResult): Promise<AutomationRun> =>
       ipcRenderer.invoke('automations:markDispatchResult', result),
     rendererReady: (): Promise<void> => ipcRenderer.invoke('automations:rendererReady'),
