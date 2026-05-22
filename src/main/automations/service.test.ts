@@ -1,3 +1,7 @@
+/* oxlint-disable max-lines -- Why: AutomationService aggregates multiple
+   responsibilities (scheduler, dispatchAutoRun, restartRun, engine wiring),
+   and its tests live in one file to share the `createStore` + repo-seed
+   helpers; splitting them tracks the upstream service split, not this work. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -350,5 +354,167 @@ describe('AutomationService.dispatchAutoRun', () => {
     ).rejects.toThrow(/missing payload\.issue/)
 
     expect(store.listAutomationRuns(automation.id)).toHaveLength(0)
+  })
+})
+
+describe('AutomationService.restartRun', () => {
+  beforeEach(() => {
+    testState.dir = mkdtempSync(join(tmpdir(), 'orca-automations-test-'))
+    // Why: fake timers let us advance the clock between the prior run's
+    // creation and the restart, so `createAutomationRun`'s
+    // (automationId, scheduledFor) dedup gate doesn't return the prior row
+    // when both are created within the same millisecond.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-13T08:59:00'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    rmSync(testState.dir, { recursive: true, force: true })
+  })
+
+  const makeChainStep = (): Step => ({
+    id: 's1',
+    kind: 'wait-for-setup',
+    config: { worktreeRef: 'wt-stub', requireSuccess: false },
+    onFailure: 'halt',
+    timeoutSeconds: null
+  })
+
+  const linearIssue = (overrides: Partial<{ id: string; identifier: string }> = {}) => ({
+    id: 'iss-1',
+    identifier: 'ORC-1',
+    title: 'A title',
+    description: 'desc',
+    url: 'https://linear.app/x/ORC-1',
+    assigneeEmail: 'me@example.com',
+    stateName: 'Todo',
+    priority: 2,
+    ...overrides
+  })
+
+  async function seedAutomationWithFailedAutoRun(): Promise<{
+    store: Awaited<ReturnType<typeof createStore>>
+    service: AutomationService
+    automationId: string
+    priorId: string
+  }> {
+    const store = await createStore()
+    store.addRepo(makeRepo({ id: 'p1' }))
+    const automation = store.createAutomation({
+      name: 'Auto chain',
+      prompt: '',
+      agentId: 'claude',
+      projectId: 'p1',
+      workspaceMode: 'new_per_run',
+      timezone: 'UTC',
+      rrule: '',
+      dtstart: 0,
+      trigger: { kind: 'manual' },
+      steps: [makeChainStep()]
+    })
+    const stored = store.listAutomations().find((entry) => entry.id === automation.id)!
+    const service = new AutomationService(store, { tickMs: 60_000 })
+    const prior = store.createAutomationRun(stored, Date.now(), 'auto', {
+      triggerSource: 'linear-issue',
+      triggerAutoTriggerId: 'at1',
+      triggerRuleId: 'rl1',
+      triggerEntityId: 'iss-1'
+    })
+    prior.status = 'failed'
+    prior.context = {
+      automation: { workspaceId: null, projectId: stored.projectId },
+      trigger: { linear: { issue: linearIssue() } }
+    }
+    store.replaceAutomationRun(prior)
+    return { store, service, automationId: automation.id, priorId: prior.id }
+  }
+
+  it('happy path: creates a new run with inherited trigger metadata + restartedFromRunId', async () => {
+    const { store, service, priorId } = await seedAutomationWithFailedAutoRun()
+    // Advance the clock so the new run's `scheduledFor` differs from the
+    // prior's — otherwise `createAutomationRun` would dedup back to prior.
+    vi.advanceTimersByTime(1000)
+    const restarted = await service.restartRun(priorId)
+    expect(restarted.id).not.toBe(priorId)
+    expect(restarted.trigger).toBe('auto')
+    expect(restarted.triggerSource).toBe('linear-issue')
+    expect(restarted.triggerAutoTriggerId).toBe('at1')
+    expect(restarted.triggerRuleId).toBe('rl1')
+    expect(restarted.triggerEntityId).toBe('iss-1')
+    expect(restarted.restartedFromRunId).toBe(priorId)
+    // Linear issue payload carried over into the new run's context.
+    const trigCtx = restarted.context?.trigger as { linear?: { issue: { identifier: string } } }
+    expect(trigCtx.linear?.issue.identifier).toBe('ORC-1')
+    // The original run is unchanged.
+    const reloaded = store.getAutomationRun(priorId)
+    expect(reloaded?.status).toBe('failed')
+  })
+
+  it('does NOT insert a dedup row on restart', async () => {
+    const { store, service, automationId, priorId } = await seedAutomationWithFailedAutoRun()
+    vi.advanceTimersByTime(1000)
+    await service.restartRun(priorId)
+    expect(store.listAutomationAutoDedup(automationId, 'at1')).toEqual([])
+  })
+
+  it('throws on non-restartable status', async () => {
+    const { store, service, priorId } = await seedAutomationWithFailedAutoRun()
+    const prior = store.getAutomationRun(priorId)!
+    prior.status = 'completed'
+    store.replaceAutomationRun(prior)
+    await expect(service.restartRun(priorId)).rejects.toThrow(/not restartable/)
+  })
+
+  it('throws when run does not exist', async () => {
+    const store = await createStore()
+    const service = new AutomationService(store, { tickMs: 60_000 })
+    await expect(service.restartRun('nonexistent-id')).rejects.toThrow(/not found/)
+  })
+
+  it('throws when automation has been deleted', async () => {
+    const { store, service, automationId, priorId } = await seedAutomationWithFailedAutoRun()
+    // Why: deleteAutomation cascades to runs, but here we need the run row to
+    // survive so restartRun reaches the "automation no longer exists" branch
+    // — exercise the lookup-failure path by orphaning the run instead.
+    const prior = store.getAutomationRun(priorId)!
+    prior.automationId = 'deleted-automation-id'
+    store.replaceAutomationRun(prior)
+    expect(store.listAutomations().find((a) => a.id === automationId)).toBeTruthy()
+    await expect(service.restartRun(priorId)).rejects.toThrow(/no longer exists/)
+  })
+
+  it('restart of a manual run preserves manual payload', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo({ id: 'p1' }))
+    const automation = store.createAutomation({
+      name: 'Manual chain',
+      prompt: '',
+      agentId: 'claude',
+      projectId: 'p1',
+      workspaceMode: 'new_per_run',
+      timezone: 'UTC',
+      rrule: '',
+      dtstart: 0,
+      trigger: { kind: 'manual' },
+      steps: [makeChainStep()]
+    })
+    const stored = store.listAutomations().find((entry) => entry.id === automation.id)!
+    const service = new AutomationService(store, { tickMs: 60_000 })
+    const prior = store.createAutomationRun(stored, Date.now(), 'manual')
+    prior.status = 'failed'
+    prior.context = {
+      automation: { workspaceId: null, projectId: stored.projectId },
+      trigger: { linear: { issue: linearIssue({ id: 'iss-2', identifier: 'ORC-2' }) } }
+    }
+    store.replaceAutomationRun(prior)
+    vi.advanceTimersByTime(1000)
+    const restarted = await service.restartRun(prior.id)
+    expect(restarted.trigger).toBe('manual')
+    expect(restarted.triggerSource).toBeUndefined()
+    expect(restarted.triggerAutoTriggerId).toBeUndefined()
+    expect(restarted.restartedFromRunId).toBe(prior.id)
+    const trigCtx = restarted.context?.trigger as { linear?: { issue: { identifier: string } } }
+    expect(trigCtx.linear?.issue.identifier).toBe('ORC-2')
   })
 })

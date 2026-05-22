@@ -11,6 +11,7 @@ import type {
   AutomationDispatchRequest,
   AutomationDispatchResult,
   AutomationRun,
+  AutomationRunStatus,
   AutomationRunTrigger,
   AutoTrigger,
   LinearIssuePayload,
@@ -96,6 +97,19 @@ export type AutomationServiceOpts = {
 }
 
 export class AutomationService {
+  // Why: design doc allows operators to restart any terminal-non-success run,
+  // including the four `skipped_*` variants. Excludes `running`/`pending`/
+  // `dispatching`/`dispatched` (in-flight) and `completed` (no reason to
+  // re-run a successful run).
+  private static readonly RESTARTABLE_STATUSES = new Set<AutomationRunStatus>([
+    'failed',
+    'dispatch_failed',
+    'cancelled',
+    'skipped_missed',
+    'skipped_unavailable',
+    'skipped_needs_interactive_auth'
+  ])
+
   private readonly store: Store
   private readonly tickMs: number
   private readonly getAgentStatus: (paneKey: string) => AgentStatusEntry | undefined
@@ -609,6 +623,53 @@ export class AutomationService {
     // cadence so the operator sees the retry start right away.
     this.wakeChains()
     return run
+  }
+
+  /** Operator-initiated restart of a terminal non-success run. Looks up the
+   *  prior run, validates its status is restartable, and dispatches a fresh
+   *  run via `dispatchRun` carrying over the prior trigger metadata + a
+   *  `restartedFromRunId` lineage pointer. Crucially does NOT touch the
+   *  dedup table: the original auto-trigger event's dedup row stays in place
+   *  so we don't re-burn it, and restart bypasses the dedup gate entirely. */
+  async restartRun(runId: string): Promise<AutomationRun> {
+    const prior = this.store.getAutomationRun(runId)
+    if (!prior) {
+      throw new Error('run not found')
+    }
+    if (!AutomationService.RESTARTABLE_STATUSES.has(prior.status)) {
+      throw new Error('run is not restartable')
+    }
+    const automation = this.store.listAutomations().find((a) => a.id === prior.automationId)
+    if (!automation) {
+      throw new Error('automation no longer exists')
+    }
+    // Why: reconstruct payload from the prior run's context. The new run uses
+    // the automation's CURRENT steps/prompt — design intent is "restart with
+    // current config", not a snapshot. The prior context.automation.projectId
+    // captures the run-time picked project (acceptsProjectSelection); fall
+    // back to the automation's stored projectId if absent.
+    const priorContext = prior.context as
+      | {
+          automation?: { projectId?: string }
+          trigger?: { linear?: { issue: LinearIssuePayload } }
+        }
+      | undefined
+    const payload: RunNowPayload = {
+      projectId: priorContext?.automation?.projectId ?? automation.projectId,
+      ...(priorContext?.trigger?.linear ? { linear: priorContext.trigger.linear } : {})
+    }
+    return this.dispatchRun({
+      automation,
+      payload,
+      triggerOverrides: {
+        kind: prior.trigger,
+        triggerSource: prior.triggerSource,
+        triggerAutoTriggerId: prior.triggerAutoTriggerId,
+        triggerRuleId: prior.triggerRuleId,
+        triggerEntityId: prior.triggerEntityId,
+        restartedFromRunId: prior.id
+      }
+    })
   }
 
   /** Iterable of every concrete runner so cancel/retry can fan out without
