@@ -174,3 +174,77 @@ describe('linearIssueSource.poll', () => {
     expect(client.issues.mock.calls.length).toBe(5)
   })
 })
+
+describe('linearIssueSource.fetchOptions', () => {
+  it('assignee includes synthetic "me" and team members, deduped', async () => {
+    const viewerId = 'viewer-id'
+    const client = {
+      viewer: Promise.resolve({ id: viewerId, email: 'v@x.com', displayName: 'V' })
+    }
+    const source = makeLinearIssueSource({
+      client: client as never,
+      listTeams: async () => [{ id: 't1', name: 'T1', key: 'T1' }],
+      getTeamMembers: async () => [
+        { id: 'u1', displayName: 'Alice' },
+        { id: viewerId, displayName: 'V' }
+      ]
+    })
+    const assignee = source.fieldCatalog.find((d) => d.field === 'linear.assignee')!
+    const opts = await assignee.fetchOptions!({ since: 0, hostId: 'h' })
+    expect(opts[0]).toEqual({ value: viewerId, label: 'me' })
+    expect(opts.some((o) => o.value === 'u1')).toBe(true)
+    expect(opts.filter((o) => o.value === viewerId).length).toBe(1)
+  })
+
+  it('tag returns deduped label names across teams', async () => {
+    const source = makeLinearIssueSource({
+      client: null,
+      listTeams: async () => [
+        { id: 't1', name: '', key: '' },
+        { id: 't2', name: '', key: '' }
+      ],
+      getTeamLabels: async (teamId) =>
+        teamId === 't1'
+          ? [
+              { id: 'l1', name: 'orca', color: '' },
+              { id: 'l2', name: 'ai', color: '' }
+            ]
+          : [
+              { id: 'l3', name: 'ai', color: '' },
+              { id: 'l4', name: 'mobile', color: '' }
+            ]
+    })
+    const tag = source.fieldCatalog.find((d) => d.field === 'linear.tag')!
+    const opts = await tag.fetchOptions!({ since: 0, hostId: 'h' })
+    const names = opts.map((o) => o.value)
+    expect(new Set(names)).toEqual(new Set(['orca', 'ai', 'mobile']))
+  })
+
+  it('state returns deduped state names across teams', async () => {
+    const source = makeLinearIssueSource({
+      client: null,
+      listTeams: async () => [{ id: 't1', name: '', key: '' }],
+      getTeamStates: async () => [
+        { id: 's1', name: 'Todo', type: 'started', color: '', position: 0 },
+        { id: 's2', name: 'In Progress', type: 'started', color: '', position: 1 }
+      ]
+    })
+    const state = source.fieldCatalog.find((d) => d.field === 'linear.state')!
+    const opts = await state.fetchOptions!({ since: 0, hostId: 'h' })
+    expect(opts.map((o) => o.value)).toEqual(['Todo', 'In Progress'])
+  })
+
+  it('assignee returns empty array when client is null', async () => {
+    const source = makeLinearIssueSource({ client: null })
+    const assignee = source.fieldCatalog.find((d) => d.field === 'linear.assignee')!
+    const opts = await assignee.fetchOptions!({ since: 0, hostId: 'h' })
+    expect(opts).toEqual([])
+  })
+
+  it('priority returns the static 5 levels', async () => {
+    const source = makeLinearIssueSource({ client: null })
+    const p = source.fieldCatalog.find((d) => d.field === 'linear.priority')!
+    const opts = await p.fetchOptions!({ since: 0, hostId: 'h' })
+    expect(opts.map((o) => o.label)).toEqual(['No priority', 'Urgent', 'High', 'Medium', 'Low'])
+  })
+})
