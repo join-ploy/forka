@@ -1,21 +1,35 @@
 // @vitest-environment jsdom
+import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
-import type { PRInfo, Repo, WorkspaceGroup, Worktree } from '../../../../shared/types'
+import { cleanup, render as rtlRender, screen, type RenderResult } from '@testing-library/react'
+import { TooltipProvider } from '@/components/ui/tooltip'
+import type {
+  GitStatusEntry,
+  PRInfo,
+  Repo,
+  WorkspaceGroup,
+  Worktree
+} from '../../../../shared/types'
 import type { CacheEntry } from '@/store/slices/github'
 import type { WorktreeScriptsEntry } from '@/store/slices/scripts'
 import type * as SelectorsModule from '@/store/selectors'
 
 // Why: GroupsSection reads workspaceGroups + the same fields GroupCard does
-// (members/repos/prCache/scriptsByWorktree). Provide a minimal in-memory
-// slice surface so each test seeds the data it needs without booting zustand.
+// (members/repos/prCache/scriptsByWorktree/gitStatus + the archive-in-flight
+// set). Provide a minimal in-memory slice surface so each test seeds the data
+// it needs without booting zustand.
 type StoreState = {
   worktreesByRepo: Record<string, Worktree[]>
   repos: Repo[]
   workspaceGroups: WorkspaceGroup[]
   prCache: Record<string, CacheEntry<PRInfo>>
   scriptsByWorktree: Record<string, WorktreeScriptsEntry>
+  gitStatusByWorktree: Record<string, GitStatusEntry[]>
+  archivingGroupIds: ReadonlySet<string>
   setActiveWorktree: ReturnType<typeof vi.fn>
+  openModal: ReturnType<typeof vi.fn>
+  updateWorkspaceGroup: ReturnType<typeof vi.fn>
+  updateWorktreeMeta: ReturnType<typeof vi.fn>
   activeWorktreeId: string | null
 }
 
@@ -27,7 +41,12 @@ const mocks = vi.hoisted(() => {
       workspaceGroups: [],
       prCache: {},
       scriptsByWorktree: {},
+      gitStatusByWorktree: {},
+      archivingGroupIds: new Set<string>(),
       setActiveWorktree: vi.fn(),
+      openModal: vi.fn(),
+      updateWorkspaceGroup: vi.fn().mockResolvedValue(undefined),
+      updateWorktreeMeta: vi.fn().mockResolvedValue(undefined),
       activeWorktreeId: null
     } as StoreState
   }
@@ -53,7 +72,19 @@ vi.mock('@/store/selectors', async () => {
   }
 })
 
+// Why: jsdom does not stub window.api. Mount only the surfaces GroupCard
+// touches (shell.openPath for the Open Folder action).
+;(window as unknown as { api: { shell: { openPath: (path: string) => void } } }).api = {
+  shell: { openPath: vi.fn() as unknown as (path: string) => void }
+}
+
 import { GroupsSection } from './GroupsSection'
+
+// Why: GroupCard's member rows use shadcn Tooltips, which require a
+// TooltipProvider ancestor (the real sidebar wraps the tree at index.tsx).
+function render(ui: React.ReactElement): RenderResult {
+  return rtlRender(<TooltipProvider>{ui}</TooltipProvider>)
+}
 
 function makeWorktree(overrides: Partial<Worktree> & { id: string; repoId: string }): Worktree {
   const { id, repoId, ...rest } = overrides
@@ -129,6 +160,8 @@ function seed({
   mocks.state.workspaceGroups = groups
   mocks.state.prCache = {}
   mocks.state.scriptsByWorktree = {}
+  mocks.state.gitStatusByWorktree = {}
+  mocks.state.archivingGroupIds = new Set<string>()
   mocks.state.activeWorktreeId = null
 }
 

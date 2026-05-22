@@ -1,23 +1,42 @@
+/* eslint-disable max-lines -- Why: GroupCard tests live in one file so the
+   store-shape mock + helper builders stay close to the assertions; splitting
+   would duplicate the mock plumbing across files. */
 // @vitest-environment jsdom
+import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import type { PRInfo, Repo, WorkspaceGroup, Worktree } from '../../../../shared/types'
+import {
+  cleanup,
+  fireEvent,
+  render as rtlRender,
+  screen,
+  type RenderResult
+} from '@testing-library/react'
+import { TooltipProvider } from '@/components/ui/tooltip'
+import type {
+  GitStatusEntry,
+  PRInfo,
+  Repo,
+  WorkspaceGroup,
+  Worktree
+} from '../../../../shared/types'
 import type { CacheEntry } from '@/store/slices/github'
 import type { WorktreeScriptsEntry } from '@/store/slices/scripts'
 
-// Why: GroupCard reads members/repos/prCache/scriptsByWorktree off the store.
-// Provide a minimal in-memory slice surface so each test seeds the data it
-// needs without booting the real zustand store.
+// Why: GroupCard reads members/repos/prCache/scriptsByWorktree/gitStatus off
+// the store. Provide a minimal in-memory slice surface so each test seeds the
+// data it needs without booting the real zustand store.
 type StoreState = {
   worktreesByRepo: Record<string, Worktree[]>
   repos: Repo[]
   workspaceGroups: WorkspaceGroup[]
   prCache: Record<string, CacheEntry<PRInfo>>
   scriptsByWorktree: Record<string, WorktreeScriptsEntry>
+  gitStatusByWorktree: Record<string, GitStatusEntry[]>
   archivingGroupIds: ReadonlySet<string>
   setActiveWorktree: ReturnType<typeof vi.fn>
   openModal: ReturnType<typeof vi.fn>
   updateWorkspaceGroup: ReturnType<typeof vi.fn>
+  updateWorktreeMeta: ReturnType<typeof vi.fn>
 }
 
 const mocks = vi.hoisted(() => {
@@ -28,10 +47,12 @@ const mocks = vi.hoisted(() => {
       workspaceGroups: [],
       prCache: {},
       scriptsByWorktree: {},
+      gitStatusByWorktree: {},
       archivingGroupIds: new Set<string>(),
       setActiveWorktree: vi.fn(),
       openModal: vi.fn(),
-      updateWorkspaceGroup: vi.fn().mockResolvedValue(undefined)
+      updateWorkspaceGroup: vi.fn().mockResolvedValue(undefined),
+      updateWorktreeMeta: vi.fn().mockResolvedValue(undefined)
     } as StoreState,
     shellOpenPath: vi.fn()
   }
@@ -53,6 +74,14 @@ vi.mock('./archive-group-flow', () => ({
 }
 
 import GroupCard from './GroupCard'
+
+// Why: GroupCard's member rows use shadcn Tooltips for the change-count and
+// CI badges, which require a TooltipProvider ancestor. Real renders are wrapped
+// in <TooltipProvider> at the sidebar root (see components/sidebar/index.tsx),
+// so add one here so the test environment mirrors that contract.
+function render(ui: React.ReactElement): RenderResult {
+  return rtlRender(<TooltipProvider>{ui}</TooltipProvider>)
+}
 
 const IDLE_SCRIPT = {
   ptyId: null,
@@ -122,13 +151,15 @@ function seed({
   repos,
   groups,
   prCache,
-  scriptsByWorktree
+  scriptsByWorktree,
+  gitStatusByWorktree
 }: {
   worktrees: Worktree[]
   repos: Repo[]
   groups: WorkspaceGroup[]
   prCache?: Record<string, CacheEntry<PRInfo>>
   scriptsByWorktree?: Record<string, WorktreeScriptsEntry>
+  gitStatusByWorktree?: Record<string, GitStatusEntry[]>
 }): void {
   const worktreesByRepo: Record<string, Worktree[]> = {}
   for (const wt of worktrees) {
@@ -139,6 +170,7 @@ function seed({
   mocks.state.workspaceGroups = groups
   mocks.state.prCache = prCache ?? {}
   mocks.state.scriptsByWorktree = scriptsByWorktree ?? {}
+  mocks.state.gitStatusByWorktree = gitStatusByWorktree ?? {}
 }
 
 describe('<GroupCard />', () => {
@@ -147,6 +179,7 @@ describe('<GroupCard />', () => {
     mocks.state.setActiveWorktree.mockClear()
     mocks.state.openModal.mockClear()
     mocks.state.updateWorkspaceGroup.mockClear()
+    mocks.state.updateWorktreeMeta.mockClear()
     mocks.shellOpenPath.mockClear()
     runGroupArchiveMock.mockClear()
     seed({ worktrees: [], repos: [], groups: [] })
@@ -188,7 +221,7 @@ describe('<GroupCard />', () => {
     expect(rows[1].textContent).toContain('ploy-client')
   })
 
-  it('renders a PR row when a member has a linkedPR and prCache entry', () => {
+  it('renders a PR row underneath the member when a linkedPR + prCache entry resolve', () => {
     const wt = makeWorktree({
       id: 'wt-orca',
       repoId: 'repo-orca',
@@ -219,8 +252,94 @@ describe('<GroupCard />', () => {
     render(<GroupCard group={group} />)
 
     const row = screen.getByTestId('group-member-row')
-    expect(row.textContent).toContain('#123')
-    expect(row.textContent).toContain('open')
+    // PrSection renders "PR #N <title>" — state is conveyed by the icon
+    // color, mirroring how WorktreeCard surfaces PR state.
+    expect(row.textContent).toContain('PR #123')
+    expect(row.textContent).toContain('feat: thing')
+  })
+
+  it('renders the changed-file count when the member has uncommitted changes', () => {
+    const wt = makeWorktree({ id: 'wt-orca', repoId: 'repo-orca' })
+    const repo = makeRepo({ id: 'repo-orca', displayName: 'orca' })
+    const group = makeGroup({ id: 'group:1', memberWorktreeIds: [wt.id] })
+    // GitStatusEntry shape is intentionally opaque here — only .length matters.
+    const gitStatusByWorktree: Record<string, GitStatusEntry[]> = {
+      [wt.id]: [
+        { path: 'a.ts', status: 'M' } as unknown as GitStatusEntry,
+        { path: 'b.ts', status: 'M' } as unknown as GitStatusEntry,
+        { path: 'c.ts', status: 'A' } as unknown as GitStatusEntry
+      ]
+    }
+    seed({ worktrees: [wt], repos: [repo], groups: [group], gitStatusByWorktree })
+
+    render(<GroupCard group={group} />)
+
+    expect(screen.getByTestId('group-member-change-count').textContent).toBe('3')
+  })
+
+  it('renders a CI icon when the prCache entry has a non-neutral checksStatus', () => {
+    const wt = makeWorktree({
+      id: 'wt-orca',
+      repoId: 'repo-orca',
+      branch: 'refs/heads/daring_tiger',
+      linkedPR: 7
+    })
+    const repo = makeRepo({ id: 'repo-orca', displayName: 'orca' })
+    const group = makeGroup({ id: 'group:1', memberWorktreeIds: [wt.id] })
+    const prCache: Record<string, CacheEntry<PRInfo>> = {
+      [`${repo.path}::daring_tiger`]: {
+        data: {
+          number: 7,
+          title: 't',
+          state: 'open',
+          url: 'https://example.test/pr/7',
+          checksStatus: 'success',
+          updatedAt: '2026-05-22T00:00:00Z',
+          mergeable: 'MERGEABLE'
+        },
+        fetchedAt: 0
+      }
+    }
+    seed({ worktrees: [wt], repos: [repo], groups: [group], prCache })
+
+    render(<GroupCard group={group} />)
+
+    expect(screen.getByTestId('group-member-ci')).toBeTruthy()
+  })
+
+  it('renders the live run equalizer on a member row when its run script is running', () => {
+    const wt = makeWorktree({ id: 'wt-orca', repoId: 'repo-orca' })
+    const repo = makeRepo({ id: 'repo-orca', displayName: 'orca' })
+    const group = makeGroup({ id: 'group:1', memberWorktreeIds: [wt.id] })
+    const scriptsByWorktree: Record<string, WorktreeScriptsEntry> = {
+      [wt.id]: {
+        run: { ptyId: 'p-1', status: 'running', exitCode: null, startedAt: 0 },
+        setup: IDLE_SCRIPT
+      }
+    }
+    seed({ worktrees: [wt], repos: [repo], groups: [group], scriptsByWorktree })
+
+    render(<GroupCard group={group} />)
+
+    expect(screen.getByTestId('group-member-run-eq')).toBeTruthy()
+  })
+
+  it('clicking a member row activates THAT member, not the first group member', () => {
+    const wtA = makeWorktree({ id: 'wt-a', repoId: 'repo-a' })
+    const wtB = makeWorktree({ id: 'wt-b', repoId: 'repo-b' })
+    const repos = [
+      makeRepo({ id: 'repo-a', displayName: 'a' }),
+      makeRepo({ id: 'repo-b', displayName: 'b' })
+    ]
+    const group = makeGroup({ id: 'group:1', memberWorktreeIds: [wtA.id, wtB.id] })
+    seed({ worktrees: [wtA, wtB], repos, groups: [group] })
+
+    render(<GroupCard group={group} />)
+
+    const rows = screen.getAllByTestId('group-member-row')
+    fireEvent.click(rows[1])
+
+    expect(mocks.state.setActiveWorktree).toHaveBeenLastCalledWith('wt-b')
   })
 
   it('right-click → Archive Group fires runGroupArchive with the group id', () => {

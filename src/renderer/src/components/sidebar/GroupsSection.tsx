@@ -4,8 +4,12 @@ import GroupCard from './GroupCard'
 
 // Why: matches the "Workspaces" caption chrome in SidebarHeader so the
 // top-level Groups section reads as a sibling section header, not a card.
+// px-3 matches WorktreeList's repo-header `pl-3` indent so every sidebar
+// section caption (Groups, repo group headers) sits at the same 12px gutter
+// from the sidebar edge — without it the Groups caption read as more inset
+// than the cards underneath.
 const SECTION_HEADER_CLASS =
-  'px-4 pt-2 pb-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80 select-none'
+  'px-3 pt-2 pb-1 text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80 select-none'
 
 export function GroupsSection(): React.JSX.Element | null {
   const workspaceGroups = useWorkspaceGroups()

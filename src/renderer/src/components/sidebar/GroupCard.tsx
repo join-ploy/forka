@@ -2,11 +2,12 @@ import React, { useCallback, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '@/store'
 import { cn } from '@/lib/utils'
-import type { PRState, WorkspaceGroup } from '../../../../shared/types'
+import type { Repo, WorkspaceGroup, Worktree } from '../../../../shared/types'
 import { getMemberWorktreesForGroup, getRepoMapFromState } from '@/store/selectors'
 import { groupIsRunning } from './group-aggregation'
 import { getWorktreeCardPrDisplay } from './worktree-card-pr-display'
-import { prStateLabel, branchDisplayName } from './WorktreeCardHelpers'
+import { branchDisplayName, checksLabel } from './WorktreeCardHelpers'
+import { PrSection } from './WorktreeCardMeta'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,22 +15,23 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { FolderOpen, LoaderCircle, MessageSquare, Pencil, Pin, PinOff, Trash2 } from 'lucide-react'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import {
+  CircleCheck,
+  CircleX,
+  FolderOpen,
+  LoaderCircle,
+  MessageSquare,
+  Pencil,
+  Pin,
+  PinOff,
+  Trash2
+} from 'lucide-react'
 import { runGroupArchive } from './archive-group-flow'
 
 export type GroupCardProps = {
   group: WorkspaceGroup
   isActive?: boolean
-}
-
-// Why: PR-state coloring mirrors the swatches used in WorktreeCardMeta's PR
-// section so grouped rows speak the same visual language as ungrouped cards
-// without pulling in the full HoverCard/dropdown chrome.
-const PR_STATE_CLASSES: Record<PRState, string> = {
-  open: 'text-emerald-500/80',
-  draft: 'text-muted-foreground/60',
-  merged: 'text-purple-600/70 dark:text-purple-400/70',
-  closed: 'text-muted-foreground/60'
 }
 
 const GroupCard = React.memo(function GroupCard({ group, isActive = false }: GroupCardProps) {
@@ -39,7 +41,6 @@ const GroupCard = React.memo(function GroupCard({ group, isActive = false }: Gro
 
   const members = useAppStore(useShallow((s) => getMemberWorktreesForGroup(s, group.id)))
   const repoMap = useAppStore((s) => getRepoMapFromState(s))
-  const prCache = useAppStore((s) => s.prCache)
   const isArchiving = useAppStore((s) => s.archivingGroupIds.has(group.id))
 
   // Why: runningWorktreeIds is not a first-class store field yet; derive it
@@ -168,7 +169,10 @@ const GroupCard = React.memo(function GroupCard({ group, isActive = false }: Gro
           </div>
         </div>
       )}
-      {/* Header row: optional running dot + group displayName */}
+      {/* Header row: optional running dot + group displayName.
+          Why: mirror the WorktreeCard title classes (text-[13px] truncate
+          leading-tight + font-normal/foreground) so the group name reads as
+          a sibling of the workspace folder name, not a subtler caption. */}
       <div className="flex items-center gap-1.5 min-w-0">
         {isRunning && (
           <span
@@ -178,7 +182,13 @@ const GroupCard = React.memo(function GroupCard({ group, isActive = false }: Gro
             data-testid="group-running-dot"
           />
         )}
-        <span className="text-[13px] font-normal truncate leading-tight text-foreground">
+        <span
+          className={cn(
+            'text-[13px] truncate leading-tight',
+            group.isUnread ? 'font-semibold' : 'font-normal',
+            'text-foreground'
+          )}
+        >
           {group.displayName}
         </span>
       </div>
@@ -189,43 +199,12 @@ const GroupCard = React.memo(function GroupCard({ group, isActive = false }: Gro
           under repo headers visually without reusing that scaffolding. */}
       {members.length > 0 && (
         <div
-          className="ml-1 flex flex-col gap-0.5 border-l border-border/50 pl-2"
+          className="ml-1 flex flex-col gap-1 border-l border-border/50 pl-2"
           data-testid="group-members"
         >
-          {members.map((member) => {
-            const repo = repoMap.get(member.repoId)
-            const repoName = repo?.displayName ?? member.repoId
-            // Why: prCache is keyed by `${repo.path}::${branch}` (see
-            // WorktreeCard.tsx where the same key is computed), not by
-            // worktreeId — match that layout so a member's cached PR
-            // resolves the same way it does on its standalone card.
-            const branch = branchDisplayName(member.branch)
-            const prCacheKey = repo && branch ? `${repo.path}::${branch}` : ''
-            const prEntry = prCacheKey ? prCache[prCacheKey] : undefined
-            const pr = prEntry?.data ?? undefined
-            const prDisplay = getWorktreeCardPrDisplay(pr, member.linkedPR)
-            const prState = prDisplay?.state
-            return (
-              <div
-                key={member.id}
-                className="flex items-center gap-1.5 min-w-0 text-[12px] leading-tight"
-                data-testid="group-member-row"
-                data-member-id={member.id}
-              >
-                <span className="text-muted-foreground truncate flex-1 min-w-0">{repoName}</span>
-                {prDisplay && (
-                  <span className="flex items-center gap-1 shrink-0 tabular-nums">
-                    <span className="text-muted-foreground/80">#{prDisplay.number}</span>
-                    {prState && (
-                      <span className={cn('text-[11px]', PR_STATE_CLASSES[prState])}>
-                        {prStateLabel(prState).toLowerCase()}
-                      </span>
-                    )}
-                  </span>
-                )}
-              </div>
-            )
-          })}
+          {members.map((member) => (
+            <GroupMemberRow key={member.id} member={member} repo={repoMap.get(member.repoId)} />
+          ))}
         </div>
       )}
 
@@ -285,6 +264,179 @@ const GroupCard = React.memo(function GroupCard({ group, isActive = false }: Gro
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+    </div>
+  )
+})
+
+type GroupMemberRowProps = {
+  member: Worktree
+  repo: Repo | undefined
+}
+
+/**
+ * Per-member row inside a GroupCard. Hand-rolls the visual subset of
+ * WorktreeCard that survives inside the group container (run indicator,
+ * change-file count, CI status, repo display name + optional PR row).
+ *
+ * Why hand-rolled rather than rendering a real WorktreeCard: WorktreeCard
+ * owns its own context menu, multi-select, drag, and SSH-disconnect dialog
+ * — every one of which would clash with the group-level affordances. The
+ * common payload is shallow enough that mirroring it keeps both surfaces
+ * honest without forcing a half-baked extraction.
+ */
+const GroupMemberRow = React.memo(function GroupMemberRow({
+  member,
+  repo
+}: GroupMemberRowProps): React.JSX.Element {
+  const setActiveWorktree = useAppStore((s) => s.setActiveWorktree)
+  const openModal = useAppStore((s) => s.openModal)
+  const updateWorktreeMeta = useAppStore((s) => s.updateWorktreeMeta)
+
+  // Why: focused selector keeps re-renders local to this row when the
+  // member's run-script status flips — mirrors WorktreeCard's pattern.
+  const isRunActive = useAppStore((s) => s.scriptsByWorktree?.[member.id]?.run.status === 'running')
+
+  // Why: file-count badge reads off the same per-worktree status array
+  // FileExplorer / SourceControl use, so the number stays consistent across
+  // every surface that mentions changes for this worktree.
+  const changedFileCount = useAppStore((s) => (s.gitStatusByWorktree[member.id] ?? []).length)
+
+  // Why: prCache is keyed `${repo.path}::${branch}` (see WorktreeCard
+  // where the same key is computed), not by worktreeId — match that
+  // layout so a member's cached PR resolves the same way it does on
+  // its standalone card.
+  const branch = branchDisplayName(member.branch)
+  const prCacheKey = repo && branch ? `${repo.path}::${branch}` : ''
+  const prEntry = useAppStore((s) => (prCacheKey ? s.prCache[prCacheKey] : undefined))
+  const pr = prEntry?.data ?? undefined
+  const prDisplay = getWorktreeCardPrDisplay(pr, member.linkedPR)
+  const checksStatus = pr?.checksStatus
+
+  const repoName = repo?.displayName ?? member.repoId
+
+  const handleRowClick = useCallback(
+    (e: React.MouseEvent) => {
+      // Why: stop the click from bubbling to the GroupCard root, which would
+      // re-activate the first member (likely a different worktree). The user
+      // clicked THIS row — honor that intent.
+      e.stopPropagation()
+      setActiveWorktree(member.id)
+    },
+    [member.id, setActiveWorktree]
+  )
+
+  const handleEditPr = useCallback(() => {
+    openModal('edit-meta', {
+      worktreeId: member.id,
+      currentDisplayName: member.displayName,
+      currentIssue: member.linkedIssue,
+      currentPR: member.linkedPR,
+      currentComment: member.comment,
+      focus: 'pr'
+    })
+  }, [member, openModal])
+
+  const handleRemovePr = useCallback(() => {
+    void updateWorktreeMeta(member.id, { linkedPR: null })
+  }, [member.id, updateWorktreeMeta])
+
+  // PrSection requires an onClick. We don't want to navigate away on PR-text
+  // clicks (the row already activates the member); swallow and let the row
+  // click take precedence by bubbling up to handleRowClick.
+  const noopPrSectionClick = useCallback((_e: React.MouseEvent) => {
+    // intentionally empty: clicking the PR row should activate the member,
+    // which happens via bubbling to the row's onClick.
+  }, [])
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={handleRowClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          handleRowClick(e as unknown as React.MouseEvent)
+        }
+      }}
+      className="flex flex-col gap-0.5 rounded -mx-1 px-1 py-0.5 cursor-pointer outline-none transition-colors hover:bg-sidebar-accent/40 focus-visible:ring-1 focus-visible:ring-ring"
+      data-testid="group-member-row"
+      data-member-id={member.id}
+    >
+      {/* Header line: repo name + change count + CI icon + run indicator */}
+      <div className="flex items-center justify-between min-w-0 gap-2">
+        <span className="text-[12px] leading-tight text-muted-foreground truncate min-w-0 flex-1">
+          {repoName}
+        </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {changedFileCount > 0 && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  className="text-[10px] tabular-nums leading-none text-muted-foreground/80"
+                  data-testid="group-member-change-count"
+                  aria-label={`${changedFileCount} changed files`}
+                >
+                  {changedFileCount}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>
+                <span>
+                  {changedFileCount} changed {changedFileCount === 1 ? 'file' : 'files'}
+                </span>
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {checksStatus && checksStatus !== 'neutral' && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  className="inline-flex items-center opacity-80 hover:opacity-100 transition-opacity"
+                  data-testid="group-member-ci"
+                >
+                  {checksStatus === 'success' && (
+                    <CircleCheck className="size-3 text-emerald-500" />
+                  )}
+                  {checksStatus === 'failure' && <CircleX className="size-3 text-rose-500" />}
+                  {checksStatus === 'pending' && (
+                    <LoaderCircle className="size-3 text-amber-500 animate-spin" />
+                  )}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>
+                <span>CI checks {checksLabel(checksStatus).toLowerCase()}</span>
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {/* Why: same 3-bar equalizer WorktreeCard uses for live run scripts
+              (.orca-run-eq, defined in main.css). Sized down a hair to fit
+              the denser member row. */}
+          {isRunActive && (
+            <span
+              className="orca-run-eq shrink-0"
+              role="img"
+              aria-label="Run script is running"
+              data-testid="group-member-run-eq"
+            >
+              <span className="orca-run-eq__bar" />
+              <span className="orca-run-eq__bar" />
+              <span className="orca-run-eq__bar" />
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* PR row underneath when the member has a linked PR. Reuses
+          PrSection so the chrome (state-tinted icon, hover card, edit/
+          remove dropdown) stays in lockstep with WorktreeCard. */}
+      {prDisplay && (
+        <PrSection
+          pr={prDisplay}
+          onClick={noopPrSectionClick}
+          onEdit={handleEditPr}
+          onRemove={handleRemovePr}
+        />
+      )}
     </div>
   )
 })
