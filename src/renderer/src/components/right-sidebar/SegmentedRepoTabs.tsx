@@ -15,6 +15,10 @@ export type RepoSegment = {
   repoId: string
   repoName: string
   status: RepoSegmentStatus
+  /** Optional numeric badge appended after the repo name. Used by the Diff
+   *  view to surface per-member changed-file counts; setup/run leave it
+   *  undefined so the rendered segment is unchanged. */
+  badge?: number
 }
 
 type Props = {
@@ -86,6 +90,17 @@ export default function SegmentedRepoTabs({
           >
             <SegmentStatusGlyph status={segment.status} />
             <span className="truncate max-w-[140px]">{segment.repoName}</span>
+            {/* Why: badge surfaces a numeric count (e.g. changed files for the
+                Diff view). Hidden when the count is 0 so the unchanged segment
+                still reads as quiet/idle. */}
+            {typeof segment.badge === 'number' && segment.badge > 0 && (
+              <span
+                className="ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium leading-none text-muted-foreground"
+                data-segment-badge={segment.badge}
+              >
+                {segment.badge}
+              </span>
+            )}
           </button>
         )
       })}

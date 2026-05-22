@@ -2,11 +2,18 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Loader2 } from 'lucide-react'
 import { useAppStore } from '@/store'
-import { useActiveWorktree } from '@/store/selectors'
+import {
+  getGroupByWorktreeId,
+  getMemberWorktreesForGroup,
+  getRepoMapFromState,
+  useActiveWorktreeId,
+  useWorktreeById
+} from '@/store/selectors'
 import { dirname } from '@/lib/path'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import { FileExplorerBackgroundMenu } from './FileExplorerBackgroundMenu'
+import { FileExplorerGroupContainer } from './FileExplorerGroupView'
 import { FileExplorerVirtualRows } from './FileExplorerVirtualRows'
 import { splitPathSegments } from './path-tree'
 import { buildFolderStatusMap, buildStatusMap } from './status-display'
@@ -23,9 +30,17 @@ import { useFileExplorerImport } from './useFileExplorerImport'
 import { useFileExplorerTree } from './useFileExplorerTree'
 import { useFileExplorerWatch } from './useFileExplorerWatch'
 
-function FileExplorerInner(): React.JSX.Element {
-  const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
-  const activeWorktree = useActiveWorktree()
+// Why: when an explicit worktreeId prop is supplied (group-mode segment view),
+// the explorer renders THAT member's tree regardless of which worktree is
+// globally active. Falling back to activeWorktreeId preserves the original
+// single-worktree behavior for non-grouped workspaces.
+type FileExplorerInnerProps = {
+  worktreeId: string | null
+}
+
+export function FileExplorerInner({ worktreeId }: FileExplorerInnerProps): React.JSX.Element {
+  const activeWorktreeId = worktreeId
+  const activeWorktree = useWorktreeById(worktreeId)
   const sshConnectedGeneration = useAppStore((s) => s.sshConnectedGeneration)
   const expandedDirs = useAppStore((s) => s.expandedDirs)
   const toggleDir = useAppStore((s) => s.toggleDir)
@@ -395,4 +410,36 @@ function FileExplorerInner(): React.JSX.Element {
   )
 }
 
-export default React.memo(FileExplorerInner)
+// Why: top-level wrapper detects whether the active worktree belongs to a
+// workspace group; if so, render the segmented per-member view. Otherwise
+// fall back to a single explorer keyed off the global activeWorktreeId.
+// Mirrors the SetupPanel / RunPanel group-detection branch.
+function FileExplorer(): React.JSX.Element {
+  const activeWorktreeId = useActiveWorktreeId()
+  const group = useAppStore((s) =>
+    activeWorktreeId ? getGroupByWorktreeId(s, activeWorktreeId) : null
+  )
+  const groupMembers = useAppStore((s) => (group ? getMemberWorktreesForGroup(s, group.id) : null))
+  const repoMap = useAppStore((s) => getRepoMapFromState(s))
+  const memberChangedCounts = useAppStore((s) => {
+    if (!groupMembers) {
+      return null
+    }
+    return groupMembers.map((wt) => (s.gitStatusByWorktree[wt.id] ?? []).length)
+  })
+
+  if (group && groupMembers && groupMembers.length > 0) {
+    return (
+      <FileExplorerGroupContainer
+        members={groupMembers}
+        memberChangedCounts={memberChangedCounts ?? []}
+        repoMap={repoMap}
+        defaultActiveWorktreeId={activeWorktreeId}
+      />
+    )
+  }
+
+  return <FileExplorerInner worktreeId={activeWorktreeId} />
+}
+
+export default React.memo(FileExplorer)
