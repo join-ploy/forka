@@ -149,6 +149,10 @@ export type Worktree = {
   baseRef?: string
   /** Remote/branch Orca should publish review commits to when it created this worktree. */
   pushTarget?: GitPushTarget
+  /** When set, this worktree is a member of the named group; card-level
+   *  state is read from the group rather than this record. Absent for
+   *  single-repo worktrees (today's shape). */
+  groupId?: string
   diffComments?: DiffComment[]
 } & GitWorktreeInfo
 
@@ -220,6 +224,10 @@ export type WorktreeMeta = {
   baseRef?: string
   /** See {@link Worktree.pushTarget}. Persisted so refreshed worktree lists keep the target. */
   pushTarget?: GitPushTarget
+  /** When set, this worktree is a member of the named group; card-level
+   *  state is read from the group rather than this record. Absent for
+   *  single-repo worktrees (today's shape). */
+  groupId?: string
   diffComments?: DiffComment[]
   /** Last-known git branch name for this worktree. Optional because
    *  branch/path live authoritatively on disk (via `git worktree list`);
