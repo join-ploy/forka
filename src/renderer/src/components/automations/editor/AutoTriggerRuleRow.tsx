@@ -47,10 +47,7 @@ export function AutoTriggerRuleRow(props: AutoTriggerRuleRowProps): React.JSX.El
   const isLast = index === total - 1
 
   return (
-    <li
-      aria-label={`rule ${rule.id}`}
-      className="overflow-hidden rounded-md border border-border bg-background"
-    >
+    <li aria-label={`rule ${rule.id}`} className="rounded-md border border-border bg-background">
       <div className="flex items-center justify-between gap-2 bg-muted/30 px-3 py-2">
         <div className="flex items-center gap-2">
           <span className="flex size-5 items-center justify-center rounded-full border border-border bg-card text-[10px] font-semibold text-muted-foreground">

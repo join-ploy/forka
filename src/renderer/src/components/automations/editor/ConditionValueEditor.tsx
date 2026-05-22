@@ -61,6 +61,15 @@ export function MultiValuePicker(props: ValueEditorProps): React.JSX.Element {
   const [options, setOptions] = React.useState<{ value: string; label: string }[]>([])
   const [open, setOpen] = React.useState(false)
   const [refreshing, setRefreshing] = React.useState(false)
+  // Why: position panel as `fixed` from trigger rect so ancestor
+  // `overflow-hidden` (AutoTriggerCard / AutoTriggerRuleRow) doesn't clip it.
+  const [position, setPosition] = React.useState<{
+    top: number
+    left: number
+    minWidth: number
+  } | null>(null)
+  const triggerRef = React.useRef<HTMLButtonElement>(null)
+  const panelRef = React.useRef<HTMLDivElement>(null)
 
   // Why: initial cache-friendly load — first paint reuses the modal-level
   // cached array (no force). Refresh-on-open below handles bypass for staleness.
@@ -79,6 +88,30 @@ export function MultiValuePicker(props: ValueEditorProps): React.JSX.Element {
     }
   }, [descriptor.field, descriptor.hasFetchOptions, loadOptions])
 
+  // Why: close on outside click / scroll / resize so a `fixed`-positioned
+  // panel can't drift away from its trigger or strand the user.
+  React.useEffect(() => {
+    if (!open) {
+      return
+    }
+    const close = (): void => setOpen(false)
+    const onDocMouseDown = (e: MouseEvent): void => {
+      const target = e.target as Node
+      if (!triggerRef.current?.contains(target) && !panelRef.current?.contains(target)) {
+        setOpen(false)
+      }
+    }
+    // Capture-phase scroll catches every scroll container ancestor, not just window.
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => {
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+      document.removeEventListener('mousedown', onDocMouseDown)
+    }
+  }, [open])
+
   const selected = Array.isArray(condition.value) ? condition.value.map(String) : []
   const labelFor = (val: string): string => options.find((o) => o.value === val)?.label ?? val
 
@@ -96,6 +129,16 @@ export function MultiValuePicker(props: ValueEditorProps): React.JSX.Element {
   // no-op so a stray close doesn't trigger an extra IPC.
   const openDropdown = (): void => {
     const willOpen = !open
+    if (willOpen) {
+      const rect = triggerRef.current?.getBoundingClientRect()
+      if (rect) {
+        setPosition({
+          top: rect.bottom + 4,
+          left: rect.left,
+          minWidth: Math.max(rect.width, 160)
+        })
+      }
+    }
     setOpen(willOpen)
     if (!willOpen || !descriptor.hasFetchOptions) {
       return
@@ -129,6 +172,7 @@ export function MultiValuePicker(props: ValueEditorProps): React.JSX.Element {
         )
       })}
       <Button
+        ref={triggerRef}
         type="button"
         variant="ghost"
         size="xs"
@@ -141,8 +185,10 @@ export function MultiValuePicker(props: ValueEditorProps): React.JSX.Element {
       </Button>
       {open ? (
         <div
+          ref={panelRef}
           role="menu"
-          className="absolute left-0 top-full z-40 mt-1 min-w-[10rem] rounded-md border border-border bg-popover p-1 shadow-[0_10px_24px_rgba(0,0,0,0.18)]"
+          style={position ?? undefined}
+          className="fixed z-50 rounded-md border border-border bg-popover p-1 shadow-[0_10px_24px_rgba(0,0,0,0.18)]"
         >
           {refreshing ? (
             <div className="flex items-center gap-1.5 px-2 py-1 text-[11px] text-muted-foreground">

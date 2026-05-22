@@ -179,7 +179,7 @@ export function AutoTriggerCard(props: AutoTriggerCardProps): React.JSX.Element 
   return (
     <div
       aria-label={`auto trigger ${trigger.id}`}
-      className="overflow-hidden rounded-lg border border-border bg-card text-sm shadow-xs"
+      className="rounded-lg border border-border bg-card text-sm shadow-xs"
     >
       <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
         <div className="flex items-center gap-2">
