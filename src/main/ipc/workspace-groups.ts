@@ -147,6 +147,7 @@ export async function createWorkspaceGroup(
     // helper — it handles `git worktree remove --force`, optimistic-token
     // clear, WorktreeMeta deletion, and history dir cleanup in one shot,
     // and is tolerant of an already-gone directory (orphan fallback).
+    const orphans: { worktreeId: string; reason: string }[] = []
     for (const success of successes) {
       const worktree = success.value.worktree
       try {
@@ -155,14 +156,21 @@ export async function createWorkspaceGroup(
           { store, runtime, mainWindow }
         )
       } catch (cleanupError) {
-        // Why: don't let a cleanup failure mask the original create error —
-        // the user needs to see why the group create rejected, not why
-        // a cleanup step further down the chain blew up. Log loudly so the
-        // operator can still find any leftover state.
+        // Why: log + collect for the thrown error message. Previously this
+        // was console.warn-only so the operator had no surface signal that
+        // the rollback left a half-created worktree on disk — the
+        // surviving worktree then shows up under its standalone repo
+        // section (no groupId stamped because the group never got
+        // persisted) and looks like a successful create from the
+        // user's POV. Surface the leak explicitly so the user knows to
+        // clean up manually.
+        const cleanupMessage =
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
         console.warn(
           `[workspace-groups] rollback failed to remove worktree ${worktree.id}:`,
           cleanupError
         )
+        orphans.push({ worktreeId: worktree.id, reason: cleanupMessage })
       }
     }
     try {
@@ -179,9 +187,15 @@ export async function createWorkspaceGroup(
     const failedRepo = repos[failedMemberIndex]
     const cause = firstFailure.reason
     const causeMessage = cause instanceof Error ? cause.message : String(cause)
+    const orphanSuffix =
+      orphans.length > 0
+        ? ` (rollback left ${orphans.length} orphan worktree${orphans.length === 1 ? '' : 's'} — ${orphans
+            .map((o) => `${o.worktreeId}: ${o.reason}`)
+            .join('; ')})`
+        : ''
     throw new Error(
       `Failed to create workspace group "${args.workspaceName}": ` +
-        `member "${failedRepo?.id ?? 'unknown'}" failed — ${causeMessage}`
+        `member "${failedRepo?.id ?? 'unknown'}" failed — ${causeMessage}${orphanSuffix}`
     )
   }
 
