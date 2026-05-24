@@ -235,59 +235,55 @@ export function LinearIssueSection({
   stateName,
   onClick
 }: LinearIssueSectionProps): React.JSX.Element {
-  const row = (
-    <div
-      className="flex items-center gap-1.5 min-w-0 cursor-pointer group/meta -mx-1.5 px-1.5 py-0.5 rounded transition-colors hover:bg-background/40"
-      onClick={(e) => {
-        // Why: when the row wraps an <a>, the anchor handles navigation in its
-        // own onClick. The onClick prop is also threaded for callers who want
-        // to short-circuit the worktree-activation bubble from a non-anchor
-        // root (e.g. when the URL is missing and we render a plain <div>).
-        if (onClick) {
-          onClick(e)
-        }
-      }}
-    >
-      <LinearIcon className="size-3 shrink-0 text-muted-foreground opacity-70 group-hover/meta:opacity-100" />
-      <div className="flex-1 min-w-0 flex items-center gap-1.5 text-[11.5px] leading-none">
-        <span className="text-foreground opacity-80 font-medium shrink-0 group-hover/meta:underline">
-          {identifier}
-        </span>
-        {title ? (
-          <span className="text-muted-foreground truncate group-hover/meta:text-foreground transition-colors">
-            {title}
-          </span>
-        ) : null}
-        {stateColor ? (
-          <span
-            className="size-1.5 rounded-full shrink-0 ml-auto"
-            style={{ backgroundColor: stateColor }}
-            aria-label={stateName ? `State: ${stateName}` : undefined}
-          />
-        ) : null}
-      </div>
-    </div>
-  )
+  // Why: render a SINGLE stable root element under HoverCardTrigger asChild.
+  // Swapping between <a> and <div> based on `url` made Radix's Slot
+  // ref-composition recurse on every re-render (setRef → Array.map → setRef)
+  // and trip React's max-update-depth guard. Mirror PrSection's pattern: one
+  // anchor with all content inline; when url is missing, render it as a
+  // dead anchor (no href) so the element type is stable across renders.
+  const rowClassName =
+    'flex items-center gap-1.5 min-w-0 cursor-pointer group/meta -mx-1.5 px-1.5 py-0.5 rounded transition-colors hover:bg-background/40 block no-underline'
+  const handleClick = (e: React.MouseEvent): void => {
+    // Why: stop the click from bubbling to the WorktreeCard / GroupCard
+    // root (which would activate the workspace). The anchor's href handles
+    // navigation in its default onClick; we just need to keep the
+    // worktree-activation handler from also firing.
+    e.stopPropagation()
+    if (onClick) {
+      onClick(e)
+    }
+  }
   return (
     <HoverCard openDelay={300}>
       <HoverCardTrigger asChild>
-        {url ? (
-          <a
-            href={url}
-            target="_blank"
-            rel="noreferrer"
-            // Why: stop the click from bubbling to the WorktreeCard / GroupCard
-            // root (which would activate the workspace). The anchor handles
-            // navigation in its own click; we just need to keep the worktree
-            // activation handler from also firing.
-            onClick={(e) => e.stopPropagation()}
-            className="block"
-          >
-            {row}
-          </a>
-        ) : (
-          row
-        )}
+        <a
+          href={url ?? undefined}
+          target={url ? '_blank' : undefined}
+          rel={url ? 'noreferrer' : undefined}
+          className={rowClassName}
+          onClick={handleClick}
+        >
+          <span className="flex items-center gap-1.5 min-w-0">
+            <LinearIcon className="size-3 shrink-0 text-muted-foreground opacity-70 group-hover/meta:opacity-100" />
+            <span className="flex-1 min-w-0 flex items-center gap-1.5 text-[11.5px] leading-none">
+              <span className="text-foreground opacity-80 font-medium shrink-0 group-hover/meta:underline">
+                {identifier}
+              </span>
+              {title ? (
+                <span className="text-muted-foreground truncate group-hover/meta:text-foreground transition-colors">
+                  {title}
+                </span>
+              ) : null}
+              {stateColor ? (
+                <span
+                  className="size-1.5 rounded-full shrink-0 ml-auto"
+                  style={{ backgroundColor: stateColor }}
+                  aria-label={stateName ? `State: ${stateName}` : undefined}
+                />
+              ) : null}
+            </span>
+          </span>
+        </a>
       </HoverCardTrigger>
       <HoverCardContent side="right" align="start" className="w-72 p-3 text-xs space-y-1.5">
         <div className="font-semibold text-[13px]">
