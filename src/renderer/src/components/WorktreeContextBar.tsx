@@ -7,6 +7,7 @@ import {
   Ellipsis,
   Folder,
   FolderOpen,
+  Layers,
   PanelRight
 } from 'lucide-react'
 import { useAppStore } from '../store'
@@ -180,14 +181,24 @@ export default function WorktreeContextBar(): React.JSX.Element | null {
               For grouped workspaces, the GROUP is the workspace identity; we
               don't render a second segment because the per-repo position is
               already surfaced by the segmented tabs in Setup/Run/Diff/Source/
-              Checks. Naming a specific member here was misleading (it locked
-              to the first member regardless of which segment the user was
-              viewing). Ungrouped worktrees keep the original
+              Checks. A Layers glyph + an inline "group" chip identify the
+              shape so the omission of the second segment doesn't look like a
+              regression. Ungrouped worktrees keep the original
               "<repo> > <worktree>" shape. */}
+          {group && (
+            <Layers
+              className="size-3.5 shrink-0 text-muted-foreground"
+              aria-label="Workspace group"
+            />
+          )}
           <span className="shrink-0 truncate text-xs font-medium text-muted-foreground">
             {group ? group.displayName : (repo?.displayName ?? 'Workspace')}
           </span>
-          {!group && (
+          {group ? (
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground/90">
+              group
+            </span>
+          ) : (
             <>
               <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
               <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">
