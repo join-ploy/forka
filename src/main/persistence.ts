@@ -772,6 +772,7 @@ export class Store {
         Repo,
         | 'displayName'
         | 'badgeColor'
+        | 'description'
         | 'hookSettings'
         | 'worktreeBaseRef'
         | 'kind'

@@ -123,7 +123,8 @@ describe('dryRunTemplate', () => {
             worktreeId: 'string',
             path: 'string',
             repoId: 'string',
-            scoped: 'string'
+            scoped: 'string',
+            description: 'string'
           }
         }
       }
@@ -137,6 +138,10 @@ describe('dryRunTemplate', () => {
     it('accepts per-member group paths when the namespace is in scope', () => {
       expect(dryRunTemplate('{{group.members.orca.scoped}}', WITH_GROUP)).toEqual([])
       expect(dryRunTemplate('{{group.members.orca.worktreeId}}', WITH_GROUP)).toEqual([])
+    })
+
+    it('accepts group.members.<repo>.description as a string leaf', () => {
+      expect(dryRunTemplate('{{group.members.orca.description}}', WITH_GROUP)).toEqual([])
     })
 
     it('rejects group paths when the namespace is absent', () => {

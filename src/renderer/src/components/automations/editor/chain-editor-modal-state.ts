@@ -127,12 +127,16 @@ export function getAvailableVariablesAtStep(
 }
 
 // Per-member leaf shape, mirroring buildGroupTemplateContext in
-// src/main/workspace-group-runtime.ts. The runner emits strings for all four.
+// src/main/workspace-group-runtime.ts. The runner emits strings for all keys
+// — `description` is always present (empty string when the repo has no
+// user-authored description) so a template referencing it never resolves
+// against `undefined`.
 const GROUP_MEMBER_SHAPE: NestedSchema = {
   worktreeId: 'string',
   path: 'string',
   repoId: 'string',
-  scoped: 'string'
+  scoped: 'string',
+  description: 'string'
 }
 
 /**

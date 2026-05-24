@@ -1,7 +1,7 @@
 import { basename } from 'path'
 
 import { buildMemberScopedRef } from '../shared/automation-member-scoped-ref'
-import type { WorkspaceGroup } from '../shared/types'
+import type { Repo, WorkspaceGroup } from '../shared/types'
 import { splitWorktreeId } from '../shared/worktree-id'
 
 /**
@@ -52,6 +52,7 @@ export function findGroupById(
  *     {{group.members.<repoFolderName>.worktreeId}}
  *     {{group.members.<repoFolderName>.path}}
  *     {{group.members.<repoFolderName>.scoped}}    // member-scoped wire ref
+ *     {{group.members.<repoFolderName>.description}}
  *
  * Members are keyed by `basename(memberPath)` — the same `<repoFolderName>`
  * segment users see on disk under `<parentPath>/`. Member entries are
@@ -72,11 +73,28 @@ export type GroupTemplateContext = {
        *  slot instead of hand-assembling the `member:<groupId>:<worktreeId>`
        *  string. Recognized by the run-prompt runner's member-scoped branch. */
       scoped: string
+      /** User-authored Repo.description (empty string when absent). Lets
+       *  automation templates hand repo context to agents. The empty leaf is
+       *  intentional — `resolveTemplate` accepts the empty string cleanly so
+       *  prompts with this slot still render in groups whose members haven't
+       *  set a description yet. */
+      description: string
     }
   >
 }
 
-export function buildGroupTemplateContext(group: WorkspaceGroup): GroupTemplateContext {
+/**
+ * Resolver for a member's user-authored `Repo.description`. Caller supplies
+ * the lookup (typically `store.getRepo`) rather than the runtime importing
+ * Store, so workspace-group-runtime stays a leaf module that test fixtures
+ * can drive with a plain map.
+ */
+export type RepoDescriptionLookup = (repoId: string) => string | undefined
+
+export function buildGroupTemplateContext(
+  group: WorkspaceGroup,
+  getRepoDescription?: RepoDescriptionLookup
+): GroupTemplateContext {
   const members: GroupTemplateContext['members'] = {}
   for (const id of group.memberWorktreeIds) {
     const parsed = splitWorktreeId(id)
@@ -91,7 +109,8 @@ export function buildGroupTemplateContext(group: WorkspaceGroup): GroupTemplateC
       worktreeId: id,
       path: parsed.worktreePath,
       repoId: parsed.repoId,
-      scoped: buildMemberScopedRef(group.id, id)
+      scoped: buildMemberScopedRef(group.id, id),
+      description: getRepoDescription?.(parsed.repoId) ?? ''
     }
   }
   return {
@@ -99,6 +118,14 @@ export function buildGroupTemplateContext(group: WorkspaceGroup): GroupTemplateC
     parentPath: group.parentPath,
     members
   }
+}
+
+/** Convenience adapter so callers with a Repo lookup don't need to write the
+ *  `r => r?.description` glue themselves. */
+export function repoDescriptionFromGetRepo(
+  getRepo: (repoId: string) => Repo | undefined
+): RepoDescriptionLookup {
+  return (repoId) => getRepo(repoId)?.description
 }
 
 /**

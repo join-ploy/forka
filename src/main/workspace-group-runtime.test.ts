@@ -161,7 +161,11 @@ describe('buildGroupTemplateContext', () => {
       // Why: the `scoped` field is a pre-built member-scoped wire ref so
       // chain authors can paste `{{group.members.orca.scoped}}` straight into
       // a worktreeRef slot — the runner recognizes the `member:` prefix.
-      scoped: 'member:group:abc:repo-orca::/u/m/workspaces/daring_tiger/orca'
+      scoped: 'member:group:abc:repo-orca::/u/m/workspaces/daring_tiger/orca',
+      // Why: empty string (not undefined/missing) when the resolver isn't
+      // wired or the repo has no description — keeps `resolveTemplate`
+      // happy without the runner having to guard each leaf.
+      description: ''
     })
   })
 
@@ -177,5 +181,15 @@ describe('buildGroupTemplateContext', () => {
   it('returns an empty members map when the group has no members', () => {
     const ctx = buildGroupTemplateContext(makeGroup({ memberWorktreeIds: [] }))
     expect(ctx.members).toEqual({})
+  })
+
+  it('threads user-authored Repo.description through to each member entry', () => {
+    const ctx = buildGroupTemplateContext(makeGroup(), (repoId) =>
+      repoId === 'repo-orca' ? 'Web app frontend (React + TS)' : undefined
+    )
+    expect(ctx.members.orca.description).toBe('Web app frontend (React + TS)')
+    // Why: resolver returning undefined collapses to '' rather than leaking
+    // an `undefined` leaf — keeps the runtime shape uniform across members.
+    expect(ctx.members['ploy-client'].description).toBe('')
   })
 })

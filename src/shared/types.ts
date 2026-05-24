@@ -47,6 +47,11 @@ export type Repo = {
   path: string
   displayName: string
   badgeColor: string
+  /** User-authored free-form description. Exposed to automation templates as
+   *  `group.members.<repoFolderName>.description` so chain authors can hand
+   *  repo context to agents. The IPC boundary caps + sanitizes the string;
+   *  the type stays loose so in-memory readers don't need to re-validate. */
+  description?: string
   addedAt: number
   kind?: RepoKind
   gitUsername?: string

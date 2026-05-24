@@ -281,6 +281,13 @@ export class AutomationService {
       })
     this.createWorkspaceGroupRunner = new CreateWorkspaceGroupRunner({
       createWorkspaceGroup: createWorkspaceGroupDep,
+      // Why: exposes Repo.description to the group templating context
+      // (`group.members.<repo>.description`) so chain authors can hand repo
+      // context to agents without an extra IPC roundtrip. Closure over
+      // `this.store` rather than the snapshot value so a description edit
+      // between service construction and the chain tick is visible to the
+      // runner.
+      getRepoDescription: (repoId) => this.store.getRepo(repoId)?.description,
       now: () => Date.now()
     })
 

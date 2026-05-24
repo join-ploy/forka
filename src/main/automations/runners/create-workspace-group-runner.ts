@@ -1,7 +1,11 @@
 import type { StepRunner, StepRunnerCtx, StepRunnerResult } from '../step-runner'
 import type { CreateWorkspaceGroupConfig } from '../../../shared/automations-types'
 import type { SetupDecision, WorkspaceGroup } from '../../../shared/types'
-import { buildGroupTemplateContext, type GroupTemplateContext } from '../../workspace-group-runtime'
+import {
+  buildGroupTemplateContext,
+  type GroupTemplateContext,
+  type RepoDescriptionLookup
+} from '../../workspace-group-runtime'
 import { resolveTemplate, TemplateResolutionError } from '../template'
 
 export type CreateWorkspaceGroupDeps = {
@@ -25,6 +29,12 @@ export type CreateWorkspaceGroupDeps = {
      *  AutomationRun that produced it. */
     createdByAutomationRunId?: string
   }) => Promise<{ groupId: string; memberWorktreeIds: string[]; parentPath: string }>
+  /** Optional resolver used to populate `group.members.<repo>.description`
+   *  in the templating context. Wired from Store.getRepo in service.ts so the
+   *  runner doesn't import Store. When omitted (most tests), every member's
+   *  description leaf is the empty string — `resolveTemplate` accepts that
+   *  cleanly. */
+  getRepoDescription?: RepoDescriptionLookup
   now: () => number
 }
 
@@ -132,7 +142,10 @@ export class CreateWorkspaceGroupRunner implements StepRunner {
         parentPath: result.parentPath,
         memberWorktreeIds: result.memberWorktreeIds
       }
-      const groupContext = buildGroupTemplateContext(groupShape as WorkspaceGroup)
+      const groupContext = buildGroupTemplateContext(
+        groupShape as WorkspaceGroup,
+        this.deps.getRepoDescription
+      )
       const tracker: Tracker = {
         groupId: result.groupId,
         memberWorktreeIds: result.memberWorktreeIds,

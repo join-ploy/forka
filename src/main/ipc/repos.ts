@@ -51,6 +51,29 @@ function emitRepoAdded(method: RepoMethod, alreadyExisted: boolean): void {
   track('repo_added', { method, ...getCohortAtEmit() })
 }
 
+/**
+ * Sanitize a user-authored repo description before it lands in persisted
+ * state. Trims, replaces C0/C1 control chars with spaces, strips bidi-
+ * override controls (mirrors `sanitizeWorktreeDisplayName` — the description
+ * gets dumped into automation prompts, so it shouldn't be able to smuggle
+ * escapes or visually reorder adjacent UI text), collapses internal
+ * whitespace, and caps at 240 chars. Returns undefined when the string
+ * collapses to empty so the IPC layer can drop the key from the patch.
+ */
+export function sanitizeRepoDescription(input: string): string | undefined {
+  const withoutControls = Array.from(input, (char) => {
+    const code = char.charCodeAt(0)
+    return code <= 0x1f || (code >= 0x7f && code <= 0x9f) ? ' ' : char
+  }).join('')
+  const sanitized = withoutControls
+    .replace(/[\u202a-\u202e\u2066-\u2069]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240)
+    .trim()
+  return sanitized || undefined
+}
+
 // Why: module-scoped so the abort handle survives window re-creation on macOS.
 // registerRepoHandlers is called again when a new BrowserWindow is created,
 // and a function-scoped variable would lose the reference to an in-flight clone.
@@ -448,6 +471,7 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
             Repo,
             | 'displayName'
             | 'badgeColor'
+            | 'description'
             | 'hookSettings'
             | 'worktreeBaseRef'
             | 'kind'
@@ -472,6 +496,26 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
         updates.issueSourcePreference !== 'auto'
       ) {
         delete updates.issueSourcePreference
+      }
+      // Why: description ends up dumped into automation prompts via
+      // `group.members.<repo>.description`. Strip C0/C1 control chars and
+      // bidi-override controls so a pasted blob can't smuggle escape
+      // sequences into a terminal or visually reorder adjacent text the
+      // way `sanitizeWorktreeDisplayName` does for titles. Cap at 240
+      // chars; collapse to undefined when empty so the persisted record
+      // drops the key cleanly.
+      if ('description' in updates) {
+        const raw = updates.description
+        if (typeof raw !== 'string') {
+          delete updates.description
+        } else {
+          const sanitized = sanitizeRepoDescription(raw)
+          if (sanitized === undefined) {
+            delete updates.description
+          } else {
+            updates.description = sanitized
+          }
+        }
       }
       // Why: `symlinkPaths` is consumed by `createWorktreeSymlinks` which
       // calls `.trim()` on each entry. A renderer bug or preload-version skew

@@ -91,17 +91,41 @@ describe('CreateWorkspaceGroupRunner', () => {
             worktreeId: 'repo-a::/p/a',
             path: '/p/a',
             repoId: 'repo-a',
-            scoped: 'member:group:gid-1:repo-a::/p/a'
+            scoped: 'member:group:gid-1:repo-a::/p/a',
+            // Why: empty string when no getRepoDescription dep is wired —
+            // keeps the leaf uniform across members and lets templates
+            // referencing `.description` resolve without erroring.
+            description: ''
           },
           b: {
             worktreeId: 'repo-b::/p/b',
             path: '/p/b',
             repoId: 'repo-b',
-            scoped: 'member:group:gid-1:repo-b::/p/b'
+            scoped: 'member:group:gid-1:repo-b::/p/b',
+            description: ''
           }
         }
       }
     })
+  })
+
+  it('threads Repo.description into the group context when the dep is wired', async () => {
+    const createWorkspaceGroup = vi.fn().mockResolvedValue({
+      groupId: 'group:gid-desc',
+      memberWorktreeIds: ['repo-a::/p/a', 'repo-b::/p/b'],
+      parentPath: '/p'
+    })
+    const runner = new CreateWorkspaceGroupRunner({
+      createWorkspaceGroup,
+      now: () => 0,
+      getRepoDescription: (repoId) => (repoId === 'repo-a' ? 'API server (Go)' : undefined)
+    })
+    const result = await runner.tick(baseCtx())
+    const group = (
+      result.contextPatch as { group: { members: Record<string, { description: string }> } }
+    ).group
+    expect(group.members.a.description).toBe('API server (Go)')
+    expect(group.members.b.description).toBe('')
   })
 
   it('resolves template references from trigger context', async () => {

@@ -69,9 +69,20 @@ describe('getAvailableVariablesAtStep — group namespace', () => {
     expect(out.group).toBeDefined()
     expect(out.group?.id).toBe('string')
     expect(out.group?.parentPath).toBe('string')
-    const members = out.group?.members as Record<string, unknown>
+    const members = out.group?.members as Record<string, Record<string, unknown>>
     // Why: keys mirror buildGroupTemplateContext — basename minus `.git`.
     expect(Object.keys(members).sort()).toEqual(['forka', 'orca'])
+    // Why: per-member schema exposes `description` as a discoverable string
+    // leaf so AvailableVariables surfaces it and the dry-run validator
+    // accepts `group.members.<repo>.description`.
+    expect(Object.keys(members.orca).sort()).toEqual([
+      'description',
+      'path',
+      'repoId',
+      'scoped',
+      'worktreeId'
+    ])
+    expect(members.orca.description).toBe('string')
   })
 
   it('still omits group from the create-workspace-group step itself (self-ref guard)', () => {
