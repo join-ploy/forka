@@ -180,23 +180,39 @@ export function getSiblingWorktreeIdsForGroupMember(
   state: Pick<AppState, 'workspaceGroups' | 'worktreesByRepo'>,
   worktreeId: string
 ): string[] {
+  return getOrderedGroupMemberIdsForWorktree(state, worktreeId).filter((id) => id !== worktreeId)
+}
+
+/**
+ * All live, non-archived member worktree ids of the WorkspaceGroup that
+ * contains the given worktree, in the group's declared member order. Returns
+ * an empty array when the worktree isn't grouped.
+ *
+ * Why: the aggregated group tab strip needs the full member order (including
+ * the active member's own slot) so sibling-tab positions stay stable when the
+ * active member switches. The active member's local tabs are spliced into
+ * their canonical slot rather than always appearing first — without that,
+ * clicking a sibling tab causes the strip to reshuffle and the just-clicked
+ * tab visually jumps to a different position than the one the user touched.
+ */
+export function getOrderedGroupMemberIdsForWorktree(
+  state: Pick<AppState, 'workspaceGroups' | 'worktreesByRepo'>,
+  worktreeId: string
+): string[] {
   const group = getGroupByWorktreeId(state, worktreeId)
   if (!group) {
     return []
   }
   const worktreeMap = getCachedWorktreeMap(state.worktreesByRepo)
-  const siblings: string[] = []
+  const ordered: string[] = []
   for (const id of group.memberWorktreeIds) {
-    if (id === worktreeId) {
-      continue
-    }
     const wt = worktreeMap.get(id)
     if (!wt || wt.isArchived) {
       continue
     }
-    siblings.push(id)
+    ordered.push(id)
   }
-  return siblings
+  return ordered
 }
 
 export const useWorkspaceGroups = () => useAppStore((s) => s.workspaceGroups)

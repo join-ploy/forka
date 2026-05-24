@@ -10,13 +10,13 @@ import type { OpenFile } from '../../store/slices/editor'
 import {
   aggregateGroupTabBar,
   type AggregateGroupTabBarInput,
-  type AggregatedTabBarSlice
+  type AggregatedTabBarOutput
 } from './aggregate-group-tab-bar'
 
 // Why: focused fixture helpers keep each test compact so the aggregation
-// contract — "owner-tagged tab list ordered active-member-first, then sibling
-// members in group order" — is visible in the test bodies rather than in
-// fixture noise.
+// contract — "before-local / after-local buckets split at the active member's
+// canonical slot, owner-tagged" — is visible in the test bodies rather than
+// in fixture noise.
 
 function makeWorktree(id: string, repoId: string): Worktree {
   return {
@@ -112,7 +112,7 @@ function makeBrowser(id: string, worktreeId: string, title = `Browser ${id}`): B
 function emptyInput(): AggregateGroupTabBarInput {
   return {
     activeMemberWorktreeId: 'wt-a',
-    siblingWorktreeIds: [],
+    memberWorktreeIdsInOrder: [],
     unifiedTabsByWorktree: {},
     groupsByWorktree: {},
     tabsByWorktree: {},
@@ -122,28 +122,20 @@ function emptyInput(): AggregateGroupTabBarInput {
 }
 
 describe('aggregateGroupTabBar', () => {
-  it('returns empty slice when there are no sibling members', () => {
+  it('returns empty buckets when there are no members', () => {
     const result = aggregateGroupTabBar(emptyInput())
-    expect(result).toEqual<AggregatedTabBarSlice>({
-      terminalTabs: [],
-      editorItems: [],
-      browserItems: [],
-      tabBarOrder: [],
+    expect(result).toEqual<AggregatedTabBarOutput>({
+      beforeLocal: { terminalTabs: [], editorItems: [], browserItems: [], tabBarOrder: [] },
+      afterLocal: { terminalTabs: [], editorItems: [], browserItems: [], tabBarOrder: [] },
       ownerByVisibleId: new Map()
     })
   })
 
-  it('flattens a sibling member’s terminal tabs in tabOrder, tagging the owner', () => {
+  it('emits a sibling that precedes the active member into beforeLocal', () => {
     const wtA = makeWorktree('wt-a', 'repoA')
     const wtB = makeWorktree('wt-b', 'repoB')
     void wtA
-
-    // Sibling group with two ordered terminals.
-    const groupB = makeGroup({
-      id: 'gB',
-      worktreeId: wtB.id,
-      tabOrder: ['utabB1', 'utabB2']
-    })
+    const groupB = makeGroup({ id: 'gB', worktreeId: wtB.id, tabOrder: ['utabB1', 'utabB2'] })
     const unifiedB: Tab[] = [
       makeUnifiedTab({
         id: 'utabB1',
@@ -169,7 +161,8 @@ describe('aggregateGroupTabBar', () => {
 
     const result = aggregateGroupTabBar({
       activeMemberWorktreeId: wtA.id,
-      siblingWorktreeIds: [wtB.id],
+      // B precedes A in declared member order → B's tabs should appear in beforeLocal.
+      memberWorktreeIdsInOrder: [wtB.id, wtA.id],
       unifiedTabsByWorktree: { [wtB.id]: unifiedB },
       groupsByWorktree: { [wtB.id]: [groupB] },
       tabsByWorktree: { [wtB.id]: terminalsB },
@@ -177,16 +170,20 @@ describe('aggregateGroupTabBar', () => {
       browserTabsByWorktree: {}
     })
 
-    expect(result.terminalTabs.map((t) => t.id)).toEqual(['termB1', 'termB2'])
-    expect(result.terminalTabs.map((t) => t.unifiedTabId)).toEqual(['utabB1', 'utabB2'])
+    expect(result.beforeLocal.terminalTabs.map((t) => t.id)).toEqual(['termB1', 'termB2'])
+    expect(result.beforeLocal.terminalTabs.map((t) => t.unifiedTabId)).toEqual(['utabB1', 'utabB2'])
+    expect(result.afterLocal.terminalTabs).toEqual([])
+    expect(result.beforeLocal.tabBarOrder).toEqual(['termB1', 'termB2'])
+    expect(result.afterLocal.tabBarOrder).toEqual([])
     // Why: each visible terminal id must resolve to its sibling owner so the
     // click handler can swap activeWorktreeId before activating.
     expect(result.ownerByVisibleId.get('termB1')).toBe(wtB.id)
     expect(result.ownerByVisibleId.get('termB2')).toBe(wtB.id)
-    expect(result.tabBarOrder).toEqual(['termB1', 'termB2'])
   })
 
-  it('orders sibling members by the siblingWorktreeIds argument', () => {
+  it('splits siblings around the active member at its canonical slot', () => {
+    // Members in declared order: [B, A, C]. Active = A.
+    // → B's tabs go in beforeLocal, C's go in afterLocal.
     const groupB = makeGroup({ id: 'gB', worktreeId: 'wt-b', tabOrder: ['uB1'] })
     const groupC = makeGroup({ id: 'gC', worktreeId: 'wt-c', tabOrder: ['uC1'] })
     const unifiedB = [
@@ -211,8 +208,7 @@ describe('aggregateGroupTabBar', () => {
     ]
     const result = aggregateGroupTabBar({
       activeMemberWorktreeId: 'wt-a',
-      // C BEFORE B: result must mirror this order.
-      siblingWorktreeIds: ['wt-c', 'wt-b'],
+      memberWorktreeIdsInOrder: ['wt-b', 'wt-a', 'wt-c'],
       unifiedTabsByWorktree: { 'wt-b': unifiedB, 'wt-c': unifiedC },
       groupsByWorktree: { 'wt-b': [groupB], 'wt-c': [groupC] },
       tabsByWorktree: {
@@ -223,7 +219,60 @@ describe('aggregateGroupTabBar', () => {
       browserTabsByWorktree: {}
     })
 
-    expect(result.tabBarOrder).toEqual(['termC', 'termB'])
+    expect(result.beforeLocal.tabBarOrder).toEqual(['termB'])
+    expect(result.afterLocal.tabBarOrder).toEqual(['termC'])
+  })
+
+  it('keeps the position stable as the active member changes', () => {
+    // Why: this is the core regression — when active = A, B-tabs render in
+    // afterLocal; when active = B, A-tabs render in beforeLocal. In both cases
+    // the visible strip order [A's tabs, B's tabs] stays the same in the
+    // composed view (after splicing local at the active member's slot).
+    const wtA = 'wt-a'
+    const wtB = 'wt-b'
+    const groupA = makeGroup({ id: 'gA', worktreeId: wtA, tabOrder: ['uA'] })
+    const groupB = makeGroup({ id: 'gB', worktreeId: wtB, tabOrder: ['uB'] })
+    const unifiedA = [
+      makeUnifiedTab({
+        id: 'uA',
+        entityId: 'tA',
+        groupId: 'gA',
+        worktreeId: wtA,
+        contentType: 'terminal',
+        label: 'A'
+      })
+    ]
+    const unifiedB = [
+      makeUnifiedTab({
+        id: 'uB',
+        entityId: 'tB',
+        groupId: 'gB',
+        worktreeId: wtB,
+        contentType: 'terminal',
+        label: 'B'
+      })
+    ]
+    const baseInput: Omit<AggregateGroupTabBarInput, 'activeMemberWorktreeId'> = {
+      memberWorktreeIdsInOrder: [wtA, wtB],
+      unifiedTabsByWorktree: { [wtA]: unifiedA, [wtB]: unifiedB },
+      groupsByWorktree: { [wtA]: [groupA], [wtB]: [groupB] },
+      tabsByWorktree: {
+        [wtA]: [makeTerminal('tA', wtA)],
+        [wtB]: [makeTerminal('tB', wtB)]
+      },
+      openFiles: [],
+      browserTabsByWorktree: {}
+    }
+
+    const activeA = aggregateGroupTabBar({ ...baseInput, activeMemberWorktreeId: wtA })
+    expect(activeA.beforeLocal.tabBarOrder).toEqual([])
+    expect(activeA.afterLocal.tabBarOrder).toEqual(['tB'])
+    // Visible strip when A is active = [local tA] + afterLocal = [tA, tB].
+
+    const activeB = aggregateGroupTabBar({ ...baseInput, activeMemberWorktreeId: wtB })
+    expect(activeB.beforeLocal.tabBarOrder).toEqual(['tA'])
+    expect(activeB.afterLocal.tabBarOrder).toEqual([])
+    // Visible strip when B is active = beforeLocal + [local tB] = [tA, tB] — identical position.
   })
 
   it('includes editor and browser tabs in the order their unified tab id appears', () => {
@@ -260,7 +309,7 @@ describe('aggregateGroupTabBar', () => {
     ]
     const result = aggregateGroupTabBar({
       activeMemberWorktreeId: 'wt-a',
-      siblingWorktreeIds: ['wt-b'],
+      memberWorktreeIdsInOrder: ['wt-a', 'wt-b'],
       unifiedTabsByWorktree: { 'wt-b': unifiedB },
       groupsByWorktree: { 'wt-b': [groupB] },
       tabsByWorktree: { 'wt-b': [makeTerminal('termB', 'wt-b')] },
@@ -268,11 +317,11 @@ describe('aggregateGroupTabBar', () => {
       browserTabsByWorktree: { 'wt-b': [makeBrowser('browB', 'wt-b')] }
     })
 
-    expect(result.terminalTabs.map((t) => t.id)).toEqual(['termB'])
-    expect(result.editorItems.map((f) => f.id)).toEqual(['fileB'])
-    expect(result.browserItems.map((b) => b.id)).toEqual(['browB'])
+    expect(result.afterLocal.terminalTabs.map((t) => t.id)).toEqual(['termB'])
+    expect(result.afterLocal.editorItems.map((f) => f.id)).toEqual(['fileB'])
+    expect(result.afterLocal.browserItems.map((b) => b.id)).toEqual(['browB'])
     // Visible-id contract: editors use unifiedTabId, terminals/browsers use entityId.
-    expect(result.tabBarOrder).toEqual(['termB', 'uEditB', 'browB'])
+    expect(result.afterLocal.tabBarOrder).toEqual(['termB', 'uEditB', 'browB'])
     expect(result.ownerByVisibleId.get('termB')).toBe('wt-b')
     expect(result.ownerByVisibleId.get('uEditB')).toBe('wt-b')
     expect(result.ownerByVisibleId.get('browB')).toBe('wt-b')
@@ -304,7 +353,7 @@ describe('aggregateGroupTabBar', () => {
     ]
     const result = aggregateGroupTabBar({
       activeMemberWorktreeId: 'wt-a',
-      siblingWorktreeIds: ['wt-b'],
+      memberWorktreeIdsInOrder: ['wt-a', 'wt-b'],
       unifiedTabsByWorktree: { 'wt-b': unifiedB },
       groupsByWorktree: { 'wt-b': [groupB] },
       // termGone has no live TerminalTab record — it should be dropped.
@@ -312,20 +361,21 @@ describe('aggregateGroupTabBar', () => {
       openFiles: [],
       browserTabsByWorktree: {}
     })
-    expect(result.tabBarOrder).toEqual(['termReal'])
+    expect(result.afterLocal.tabBarOrder).toEqual(['termReal'])
   })
 
   it('drops sibling members not present in unifiedTabsByWorktree without throwing', () => {
     const result = aggregateGroupTabBar({
       activeMemberWorktreeId: 'wt-a',
-      siblingWorktreeIds: ['wt-b'],
+      memberWorktreeIdsInOrder: ['wt-a', 'wt-b'],
       unifiedTabsByWorktree: {},
       groupsByWorktree: {},
       tabsByWorktree: {},
       openFiles: [],
       browserTabsByWorktree: {}
     })
-    expect(result.tabBarOrder).toEqual([])
+    expect(result.beforeLocal.tabBarOrder).toEqual([])
+    expect(result.afterLocal.tabBarOrder).toEqual([])
   })
 
   it('iterates every group of a sibling member (not just the focused one)', () => {
@@ -355,13 +405,13 @@ describe('aggregateGroupTabBar', () => {
     ]
     const result = aggregateGroupTabBar({
       activeMemberWorktreeId: 'wt-a',
-      siblingWorktreeIds: ['wt-b'],
+      memberWorktreeIdsInOrder: ['wt-a', 'wt-b'],
       unifiedTabsByWorktree: { 'wt-b': unifiedB },
       groupsByWorktree: { 'wt-b': [g1, g2] },
       tabsByWorktree: { 'wt-b': [makeTerminal('t1', 'wt-b'), makeTerminal('t2', 'wt-b')] },
       openFiles: [],
       browserTabsByWorktree: {}
     })
-    expect(result.tabBarOrder).toEqual(['t1', 't2'])
+    expect(result.afterLocal.tabBarOrder).toEqual(['t1', 't2'])
   })
 })

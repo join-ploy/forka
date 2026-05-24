@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import type { OpenFile } from '@/store/slices/editor'
 import type { BrowserTab as BrowserTabState, Tab, TabGroup } from '../../../../shared/types'
 import { useAppStore } from '../../store'
-import { getSiblingWorktreeIdsForGroupMember, useAllWorktrees } from '../../store/selectors'
+import { getOrderedGroupMemberIdsForWorktree, useAllWorktrees } from '../../store/selectors'
 import { createUntitledMarkdownFile } from '../../lib/create-untitled-markdown'
 import { getConnectionId } from '../../lib/connection-context'
 import { extractIpcErrorMessage } from '../../lib/ipc-error'
@@ -161,13 +161,20 @@ export function useTabGroupWorkspaceModel({
   // Why: only the focused pane aggregates sibling-member tabs. Splits within
   // the same worktree each render their own TabBar; surfacing sibling tabs in
   // every strip would duplicate them across panes and confuse drag/close.
-  // Subscribing to the sibling ids (and slices) only when this flag is true
+  // Subscribing to the member ids (and slices) only when this flag is true
   // also keeps unrelated panes from re-rendering when a sibling member’s tabs
-  // change.
-  const siblingWorktreeIds = useAppStore(
+  // change. The full ordered member list (INCLUDING this worktree) is used to
+  // splice local tabs at the active member's canonical slot so the strip's
+  // visual order stays stable as the active member switches — without that,
+  // clicking a sibling tab would reshuffle every tab's position.
+  const memberWorktreeIdsInOrder = useAppStore(
     useShallow((state) =>
-      aggregateGroupMemberTabs ? getSiblingWorktreeIdsForGroupMember(state, worktreeId) : EMPTY_IDS
+      aggregateGroupMemberTabs ? getOrderedGroupMemberIdsForWorktree(state, worktreeId) : EMPTY_IDS
     )
+  )
+  const hasSiblings = useMemo(
+    () => memberWorktreeIdsInOrder.some((id) => id !== worktreeId),
+    [memberWorktreeIdsInOrder, worktreeId]
   )
 
   // Why: subscribe to each raw slice individually so each one is a stable
@@ -185,14 +192,17 @@ export function useTabGroupWorkspaceModel({
   const allOpenFiles = useAppStore((s) => s.openFiles)
 
   const siblingState = useMemo(() => {
-    if (siblingWorktreeIds.length === 0) {
+    if (!hasSiblings) {
       return EMPTY_SIBLING_STATE
     }
     const unifiedTabsByWorktree: Record<string, Tab[]> = {}
     const groupsByWorktree: Record<string, TabGroup[]> = {}
     const tabsByWorktree: Record<string, (typeof allTabsByWorktree)[string]> = {}
     const browserTabsByWorktree: Record<string, BrowserTabState[]> = {}
-    for (const id of siblingWorktreeIds) {
+    for (const id of memberWorktreeIdsInOrder) {
+      if (id === worktreeId) {
+        continue
+      }
       const u = allUnifiedTabsByWorktree[id]
       if (u) {
         unifiedTabsByWorktree[id] = u
@@ -210,7 +220,9 @@ export function useTabGroupWorkspaceModel({
         browserTabsByWorktree[id] = b
       }
     }
-    const openFiles = allOpenFiles.filter((f) => siblingWorktreeIds.includes(f.worktreeId))
+    const openFiles = allOpenFiles.filter(
+      (f) => f.worktreeId !== worktreeId && memberWorktreeIdsInOrder.includes(f.worktreeId)
+    )
     return {
       unifiedTabsByWorktree,
       groupsByWorktree,
@@ -219,7 +231,9 @@ export function useTabGroupWorkspaceModel({
       openFiles
     }
   }, [
-    siblingWorktreeIds,
+    hasSiblings,
+    memberWorktreeIdsInOrder,
+    worktreeId,
     allUnifiedTabsByWorktree,
     allGroupsByWorktree,
     allTabsByWorktree,
@@ -231,36 +245,67 @@ export function useTabGroupWorkspaceModel({
     () =>
       aggregateGroupTabBar({
         activeMemberWorktreeId: worktreeId,
-        siblingWorktreeIds,
+        memberWorktreeIdsInOrder,
         unifiedTabsByWorktree: siblingState.unifiedTabsByWorktree,
         groupsByWorktree: siblingState.groupsByWorktree,
         tabsByWorktree: siblingState.tabsByWorktree,
         openFiles: siblingState.openFiles,
         browserTabsByWorktree: siblingState.browserTabsByWorktree
       }),
-    [siblingState, siblingWorktreeIds, worktreeId]
+    [memberWorktreeIdsInOrder, siblingState, worktreeId]
   )
 
+  // Why: splice local tabs into the active member's canonical slot rather
+  // than always at the head. Without this, every active-member switch would
+  // reshuffle the strip and the just-clicked tab would jump to a different
+  // visible column — see the "selecting the group tabs is broken" bug.
   const aggregatedTerminalTabs = useMemo(
     () =>
-      aggregatedSiblings.terminalTabs.length > 0
-        ? [...terminalTabs, ...aggregatedSiblings.terminalTabs]
-        : terminalTabs,
-    [aggregatedSiblings.terminalTabs, terminalTabs]
+      aggregatedSiblings.beforeLocal.terminalTabs.length === 0 &&
+      aggregatedSiblings.afterLocal.terminalTabs.length === 0
+        ? terminalTabs
+        : [
+            ...aggregatedSiblings.beforeLocal.terminalTabs,
+            ...terminalTabs,
+            ...aggregatedSiblings.afterLocal.terminalTabs
+          ],
+    [
+      aggregatedSiblings.afterLocal.terminalTabs,
+      aggregatedSiblings.beforeLocal.terminalTabs,
+      terminalTabs
+    ]
   )
   const aggregatedEditorItems = useMemo(
     () =>
-      aggregatedSiblings.editorItems.length > 0
-        ? [...editorItems, ...aggregatedSiblings.editorItems]
-        : editorItems,
-    [aggregatedSiblings.editorItems, editorItems]
+      aggregatedSiblings.beforeLocal.editorItems.length === 0 &&
+      aggregatedSiblings.afterLocal.editorItems.length === 0
+        ? editorItems
+        : [
+            ...aggregatedSiblings.beforeLocal.editorItems,
+            ...editorItems,
+            ...aggregatedSiblings.afterLocal.editorItems
+          ],
+    [
+      aggregatedSiblings.afterLocal.editorItems,
+      aggregatedSiblings.beforeLocal.editorItems,
+      editorItems
+    ]
   )
   const aggregatedBrowserItems = useMemo(
     () =>
-      aggregatedSiblings.browserItems.length > 0
-        ? [...browserItems, ...aggregatedSiblings.browserItems]
-        : browserItems,
-    [aggregatedSiblings.browserItems, browserItems]
+      aggregatedSiblings.beforeLocal.browserItems.length === 0 &&
+      aggregatedSiblings.afterLocal.browserItems.length === 0
+        ? browserItems
+        : [
+            ...aggregatedSiblings.beforeLocal.browserItems,
+            ...browserItems,
+            ...aggregatedSiblings.afterLocal.browserItems
+          ],
+    [
+      aggregatedSiblings.afterLocal.browserItems,
+      aggregatedSiblings.beforeLocal.browserItems,
+      browserItems
+    ]
   )
 
   // Why: the click handlers need to find a sibling tab’s unifiedTabId from
@@ -269,7 +314,10 @@ export function useTabGroupWorkspaceModel({
   // many sibling tabs exist.
   const siblingTabByVisibleId = useMemo(() => {
     const map = new Map<string, { ownerWorktreeId: string; tab: Tab }>()
-    for (const siblingId of siblingWorktreeIds) {
+    for (const siblingId of memberWorktreeIdsInOrder) {
+      if (siblingId === worktreeId) {
+        continue
+      }
       const tabs = siblingState.unifiedTabsByWorktree[siblingId]
       if (!tabs) {
         continue
@@ -281,7 +329,7 @@ export function useTabGroupWorkspaceModel({
       }
     }
     return map
-  }, [siblingState.unifiedTabsByWorktree, siblingWorktreeIds])
+  }, [memberWorktreeIdsInOrder, siblingState.unifiedTabsByWorktree, worktreeId])
 
   const closeEditorIfUnreferenced = useCallback(
     (entityId: string, closingTabId: string) => {
@@ -669,10 +717,17 @@ export function useTabGroupWorkspaceModel({
         ? item.entityId
         : item.id
     })
-    return aggregatedSiblings.tabBarOrder.length > 0
-      ? [...localOrder, ...aggregatedSiblings.tabBarOrder]
-      : localOrder
-  }, [aggregatedSiblings.tabBarOrder, group, groupTabs])
+    const before = aggregatedSiblings.beforeLocal.tabBarOrder
+    const after = aggregatedSiblings.afterLocal.tabBarOrder
+    return before.length === 0 && after.length === 0
+      ? localOrder
+      : [...before, ...localOrder, ...after]
+  }, [
+    aggregatedSiblings.afterLocal.tabBarOrder,
+    aggregatedSiblings.beforeLocal.tabBarOrder,
+    group,
+    groupTabs
+  ])
 
   return {
     group,
