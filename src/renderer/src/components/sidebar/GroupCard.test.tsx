@@ -22,6 +22,7 @@ import type { WorktreeScriptsEntry } from '@/store/slices/scripts'
 // Why: GroupCard reads members/repos/prCache/scriptsByWorktree/gitStatus off
 // the store. Provide a minimal in-memory slice surface so each test seeds the
 // data it needs without booting the real zustand store.
+type AutomationRun = { status: string }
 type StoreState = {
   worktreesByRepo: Record<string, Worktree[]>
   repos: Repo[]
@@ -30,10 +31,22 @@ type StoreState = {
   scriptsByWorktree: Record<string, WorktreeScriptsEntry>
   gitStatusByWorktree: Record<string, GitStatusEntry[]>
   archivingGroupIds: ReadonlySet<string>
+  // Why: GroupCard now reads worktreeCardProperties for the inline-agents /
+  // pr / ci gates, and automationRunsById for the per-member Bot badge.
+  // Provide stable defaults so existing tests that don't seed these still
+  // exercise the render path.
+  worktreeCardProperties: string[]
+  automationRunsById: Record<string, AutomationRun>
+  retainedAgentsByPaneKey: Record<string, never>
+  agentStatusByPaneKey: Record<string, never>
+  acknowledgedAgentsByPaneKey: Record<string, never>
+  agentStatusEpoch: number
+  tabsByWorktree: Record<string, never[]>
   setActiveWorktree: ReturnType<typeof vi.fn>
   openModal: ReturnType<typeof vi.fn>
   updateWorkspaceGroup: ReturnType<typeof vi.fn>
   updateWorktreeMeta: ReturnType<typeof vi.fn>
+  fetchPRForBranch: ReturnType<typeof vi.fn>
 }
 
 const mocks = vi.hoisted(() => {
@@ -46,10 +59,18 @@ const mocks = vi.hoisted(() => {
       scriptsByWorktree: {},
       gitStatusByWorktree: {},
       archivingGroupIds: new Set<string>(),
+      worktreeCardProperties: ['status', 'pr', 'ci', 'inline-agents'],
+      automationRunsById: {},
+      retainedAgentsByPaneKey: {},
+      agentStatusByPaneKey: {},
+      acknowledgedAgentsByPaneKey: {},
+      agentStatusEpoch: 0,
+      tabsByWorktree: {},
       setActiveWorktree: vi.fn(),
       openModal: vi.fn(),
       updateWorkspaceGroup: vi.fn().mockResolvedValue(undefined),
-      updateWorktreeMeta: vi.fn().mockResolvedValue(undefined)
+      updateWorktreeMeta: vi.fn().mockResolvedValue(undefined),
+      fetchPRForBranch: vi.fn().mockResolvedValue(null)
     } as StoreState,
     shellOpenPath: vi.fn()
   }
@@ -547,5 +568,114 @@ describe('<GroupCard />', () => {
     render(<GroupCard group={group} />)
 
     expect(screen.getByTestId('group-running-dot')).toBeTruthy()
+  })
+
+  it('renders +/- PR diff stats on a member row when the cached PR has additions/deletions', () => {
+    // Why: matches the WorktreeCard `+N −M` chip — group members must show
+    // the same diff-size signal so the user can spot large PRs at a glance.
+    const wt = makeWorktree({
+      id: 'wt-orca',
+      repoId: 'repo-orca',
+      branch: 'refs/heads/daring_tiger',
+      linkedPR: 42
+    })
+    const repo = makeRepo({ id: 'repo-orca', displayName: 'orca' })
+    const group = makeGroup({ id: 'group:1', memberWorktreeIds: [wt.id] })
+    const prCache: Record<string, CacheEntry<PRInfo>> = {
+      [`${repo.path}::daring_tiger`]: {
+        data: {
+          number: 42,
+          title: 'big change',
+          state: 'open',
+          url: 'https://example.test/pr/42',
+          checksStatus: 'neutral',
+          updatedAt: '2026-05-22T00:00:00Z',
+          mergeable: 'MERGEABLE',
+          additions: 120,
+          deletions: 7
+        } as unknown as PRInfo,
+        fetchedAt: 0
+      }
+    }
+    seed({ worktrees: [wt], repos: [repo], groups: [group], prCache })
+
+    render(<GroupCard group={group} />)
+
+    const stats = screen.getByTestId('group-member-diff-stats')
+    expect(stats.textContent).toContain('+120')
+    expect(stats.textContent).toContain('−7')
+  })
+
+  it('renders an automation Bot badge on a member row when it was created by an automation', () => {
+    // Why: the Bot icon flips to animate-pulse while the originating run is
+    // still active, matching WorktreeCard's behavior.
+    const wt = makeWorktree({
+      id: 'wt-orca',
+      repoId: 'repo-orca',
+      createdByAutomationRunId: 'run-1'
+    })
+    const repo = makeRepo({ id: 'repo-orca', displayName: 'orca' })
+    const group = makeGroup({ id: 'group:1', memberWorktreeIds: [wt.id] })
+    mocks.state.automationRunsById = { 'run-1': { status: 'running' } }
+    seed({ worktrees: [wt], repos: [repo], groups: [group] })
+
+    render(<GroupCard group={group} />)
+
+    const bot = screen.getByTestId('group-member-automation-bot')
+    expect(bot.getAttribute('data-automation-run-id')).toBe('run-1')
+    expect(bot.getAttribute('data-automation-active')).toBe('true')
+  })
+
+  it('omits the automation Bot badge when the member was not created by an automation', () => {
+    const wt = makeWorktree({ id: 'wt-orca', repoId: 'repo-orca' })
+    const repo = makeRepo({ id: 'repo-orca', displayName: 'orca' })
+    const group = makeGroup({ id: 'group:1', memberWorktreeIds: [wt.id] })
+    seed({ worktrees: [wt], repos: [repo], groups: [group] })
+
+    render(<GroupCard group={group} />)
+
+    expect(screen.queryByTestId('group-member-automation-bot')).toBeNull()
+  })
+
+  it('renders the combined agents section only when inline-agents card prop is enabled', () => {
+    const wt = makeWorktree({ id: 'wt-orca', repoId: 'repo-orca' })
+    const repo = makeRepo({ id: 'repo-orca', displayName: 'orca' })
+    const group = makeGroup({ id: 'group:1', memberWorktreeIds: [wt.id] })
+    seed({ worktrees: [wt], repos: [repo], groups: [group] })
+
+    // Enabled: container renders even though the inner WorktreeCardAgents
+    // returns null for a worktree with zero live agents — the empty wrapper
+    // is intentional so the section appears reactively once agents arrive.
+    mocks.state.worktreeCardProperties = ['status', 'pr', 'ci', 'inline-agents']
+    const enabled = render(<GroupCard group={group} />)
+    expect(enabled.container.querySelector('[data-testid="group-agents"]')).toBeTruthy()
+    enabled.unmount()
+
+    // Disabled: container must NOT render.
+    mocks.state.worktreeCardProperties = ['status', 'pr', 'ci']
+    const disabled = render(<GroupCard group={group} />)
+    expect(disabled.container.querySelector('[data-testid="group-agents"]')).toBeNull()
+  })
+
+  it('mounting a GroupMemberRow triggers fetchPRForBranch for that branch', () => {
+    // Why: before this, group sibling rows pulled stale PR data from the
+    // cache without ever requesting a refresh on their own — sibling diff
+    // stats / PR state only ever updated when the user briefly visited the
+    // sibling. The mount fetch is what closes that gap.
+    const wt = makeWorktree({
+      id: 'wt-orca',
+      repoId: 'repo-orca',
+      branch: 'refs/heads/daring_tiger',
+      linkedPR: 99
+    })
+    const repo = makeRepo({ id: 'repo-orca', displayName: 'orca' })
+    const group = makeGroup({ id: 'group:1', memberWorktreeIds: [wt.id] })
+    seed({ worktrees: [wt], repos: [repo], groups: [group] })
+
+    render(<GroupCard group={group} />)
+
+    expect(mocks.state.fetchPRForBranch).toHaveBeenCalledWith(repo.path, 'daring_tiger', {
+      linkedPRNumber: 99
+    })
   })
 })

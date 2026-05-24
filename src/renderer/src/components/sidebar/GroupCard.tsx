@@ -1,13 +1,16 @@
-import React, { useCallback, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '@/store'
 import { cn } from '@/lib/utils'
+import { isAutomationRunActive } from '@/store/slices/automation-runs'
+import { isFolderRepo } from '../../../../shared/repo-kind'
 import type { Repo, WorkspaceGroup, Worktree } from '../../../../shared/types'
 import { getMemberWorktreesForGroup, getRepoMapFromState } from '@/store/selectors'
 import { groupIsRunning } from './group-aggregation'
 import { getWorktreeCardPrDisplay } from './worktree-card-pr-display'
 import { branchDisplayName, checksLabel } from './WorktreeCardHelpers'
 import { PrSection } from './WorktreeCardMeta'
+import WorktreeCardAgents from './WorktreeCardAgents'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,6 +20,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import {
+  Bot,
   CircleCheck,
   CircleX,
   FolderOpen,
@@ -28,6 +32,13 @@ import {
   Trash2
 } from 'lucide-react'
 import { runGroupArchive } from './archive-group-flow'
+
+// Why: keep the periodic sidebar PR refresh aligned with the user-requested
+// 60s cadence. WorktreeCard's mount-effect calls fetchPRForBranch once; the
+// shared 5-min cache TTL then prevented any actual refetch in steady state.
+// A 60s interval with force=true keeps PR additions/deletions, state and
+// checksStatus reactive without rippling through every cache consumer.
+const SIDEBAR_PR_REFRESH_INTERVAL_MS = 60_000
 
 export type GroupCardProps = {
   group: WorkspaceGroup
@@ -42,6 +53,8 @@ const GroupCard = React.memo(function GroupCard({ group, isActive = false }: Gro
   const members = useAppStore(useShallow((s) => getMemberWorktreesForGroup(s, group.id)))
   const repoMap = useAppStore((s) => getRepoMapFromState(s))
   const isArchiving = useAppStore((s) => s.archivingGroupIds.has(group.id))
+  const cardProps = useAppStore((s) => s.worktreeCardProperties)
+  const showInlineAgents = cardProps.includes('inline-agents')
 
   // Why: runningWorktreeIds is not a first-class store field yet; derive it
   // from scriptsByWorktree on the fly. Mirrors how WorktreeCard reads its own
@@ -208,6 +221,31 @@ const GroupCard = React.memo(function GroupCard({ group, isActive = false }: Gro
         </div>
       )}
 
+      {/* Why: combined agents list spans every member — the user picked this
+          over per-member placement so they can see the whole group's live
+          agent activity at a glance. Each member's WorktreeCardAgents renders
+          nothing when it has no agents, so the section silently vanishes for
+          idle groups. Gated on the same `inline-agents` card property that
+          drives the single-workspace card so the user's hide preference is
+          honored consistently across both surfaces. */}
+      {showInlineAgents && members.length > 0 && (
+        <div
+          className="ml-1 mt-0.5 flex flex-col gap-0.5"
+          data-testid="group-agents"
+          // Why: swallow bubbling so an agent-row click doesn't fall through
+          // to the GroupCard root's handleClick / handleRename. Each member's
+          // WorktreeCardAgents installs its own stopBubble too, but it lives
+          // inside conditional renders; this outer guard covers any future
+          // sibling content tucked into the same wrapper.
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+        >
+          {members.map((member) => (
+            <WorktreeCardAgents key={member.id} worktreeId={member.id} />
+          ))}
+        </div>
+      )}
+
       {/* Why: surface the last archive-cleanup failure inline so the user can
           see which member(s) blocked the cascade without leaving the visible
           Groups list. ArchivedSection renders the same string for archived
@@ -290,6 +328,10 @@ const GroupMemberRow = React.memo(function GroupMemberRow({
 }: GroupMemberRowProps): React.JSX.Element {
   const openModal = useAppStore((s) => s.openModal)
   const updateWorktreeMeta = useAppStore((s) => s.updateWorktreeMeta)
+  const fetchPRForBranch = useAppStore((s) => s.fetchPRForBranch)
+  const cardProps = useAppStore((s) => s.worktreeCardProperties)
+  const showPR = cardProps.includes('pr')
+  const showCI = cardProps.includes('ci')
 
   // Why: focused selector keeps re-renders local to this row when the
   // member's run-script status flips — mirrors WorktreeCard's pattern.
@@ -297,19 +339,75 @@ const GroupMemberRow = React.memo(function GroupMemberRow({
 
   // Why: file-count badge reads off the same per-worktree status array
   // FileExplorer / SourceControl use, so the number stays consistent across
-  // every surface that mentions changes for this worktree.
+  // every surface that mentions changes for this worktree. Polling for
+  // non-active members is now driven by useGitStatusPolling's group fan-out
+  // so the count stays fresh without the user having to switch members.
   const changedFileCount = useAppStore((s) => (s.gitStatusByWorktree[member.id] ?? []).length)
+
+  // Why: surface the worktree's automation-creation badge per member so
+  // group rows match WorktreeCard's affordance. A pulsing bot signals an
+  // active automation run; a static bot signals "created by automation,
+  // run has terminated". Sibling members in a group can each have their
+  // own createdByAutomationRunId because grouped creation forwards the
+  // chain run id onto every worktree it minted.
+  const automationRunId = member.createdByAutomationRunId
+  const automationRunStatus = useAppStore((s) =>
+    automationRunId ? s.automationRunsById[automationRunId]?.status : undefined
+  )
+  const automationBadge = automationRunId
+    ? {
+        active: automationRunStatus ? isAutomationRunActive(automationRunStatus) : false,
+        tooltip: automationRunStatus
+          ? isAutomationRunActive(automationRunStatus)
+            ? 'Automation running…'
+            : 'Created by automation'
+          : 'Created by automation'
+      }
+    : null
 
   // Why: prCache is keyed `${repo.path}::${branch}` (see WorktreeCard
   // where the same key is computed), not by worktreeId — match that
   // layout so a member's cached PR resolves the same way it does on
   // its standalone card.
   const branch = branchDisplayName(member.branch)
+  const isFolder = repo ? isFolderRepo(repo) : false
   const prCacheKey = repo && branch ? `${repo.path}::${branch}` : ''
   const prEntry = useAppStore((s) => (prCacheKey ? s.prCache[prCacheKey] : undefined))
   const pr = prEntry?.data ?? undefined
   const prDisplay = getWorktreeCardPrDisplay(pr, member.linkedPR)
   const checksStatus = pr?.checksStatus
+
+  // Why: before this effect, group sibling rows pulled stale PR data from
+  // the cache (whatever the user had last warmed by visiting the member's
+  // worktree) and never re-fetched on their own. Match WorktreeCard's
+  // mount-fetch and add the user-requested 60s sidebar refresh interval so
+  // PR additions/deletions, state, and checksStatus actually move while
+  // the user stays focused inside Orca. Skip when both PR and CI columns
+  // are hidden — a presentational preference shouldn't burn rate limit on
+  // data the user cannot see.
+  useEffect(() => {
+    if (!repo || isFolder || member.isBare || !prCacheKey || (!showPR && !showCI)) {
+      return
+    }
+    const linkedPRNumber = member.linkedPR ?? null
+    fetchPRForBranch(repo.path, branch, { linkedPRNumber })
+    const interval = setInterval(() => {
+      // Why: force so the interval actually pulls fresh data even when the
+      // 5-minute prCache TTL would otherwise short-circuit a non-forced call.
+      fetchPRForBranch(repo.path, branch, { linkedPRNumber, force: true })
+    }, SIDEBAR_PR_REFRESH_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [
+    repo,
+    isFolder,
+    member.isBare,
+    member.linkedPR,
+    branch,
+    prCacheKey,
+    fetchPRForBranch,
+    showPR,
+    showCI
+  ])
 
   const repoName = repo?.displayName ?? member.repoId
 
@@ -354,6 +452,20 @@ const GroupMemberRow = React.memo(function GroupMemberRow({
           {branch && <span className="text-foreground"> ({branch})</span>}
         </span>
         <div className="flex items-center gap-1.5 shrink-0">
+          {/* Why: PR-based +/- diff stats. Matches the per-card display on
+              WorktreeCard (line ~597) so the user gets the same "size of the
+              change vs the PR base" signal here. Hidden when both totals are 0
+              or there is no PR — keeps unchanged worktrees uncluttered. */}
+          {pr && ((pr.additions ?? 0) > 0 || (pr.deletions ?? 0) > 0) && (
+            <span
+              className="text-[10px] tabular-nums leading-none shrink-0"
+              data-testid="group-member-diff-stats"
+              aria-label={`+${pr.additions ?? 0} additions, -${pr.deletions ?? 0} deletions`}
+            >
+              <span className="text-emerald-500">+{pr.additions ?? 0}</span>{' '}
+              <span className="text-rose-500">−{pr.deletions ?? 0}</span>
+            </span>
+          )}
           {changedFileCount > 0 && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -369,6 +481,28 @@ const GroupMemberRow = React.memo(function GroupMemberRow({
                 <span>
                   {changedFileCount} changed {changedFileCount === 1 ? 'file' : 'files'}
                 </span>
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {automationBadge && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  data-testid="group-member-automation-bot"
+                  data-automation-run-id={automationRunId}
+                  data-automation-active={automationBadge.active ? 'true' : 'false'}
+                  className="inline-flex items-center text-muted-foreground"
+                >
+                  <Bot
+                    className={cn(
+                      'size-3',
+                      automationBadge.active && 'animate-pulse text-foreground'
+                    )}
+                  />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={8}>
+                <span>{automationBadge.tooltip}</span>
               </TooltipContent>
             </Tooltip>
           )}
