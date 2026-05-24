@@ -134,12 +134,16 @@ export function WorktreePicker(props: WorktreePickerProps): React.JSX.Element {
     return out
   }, [groupEntries, worktrees])
 
-  // Why: prefill the only selectable value on mount when nothing's chosen
-  // yet — there's nothing else the user could meaningfully click. The
-  // "selectable values" set EXCLUDES member-scoped entries: those are
-  // opt-in (Ask C) and shouldn't be the silent default just because a group
-  // has exactly one member. Guarded by a one-shot ref so a later worktree
-  // appearing or a remount after a manual edit can't clobber the choice.
+  // Why: prefill the only top-level selectable value on mount when nothing's
+  // chosen yet — there's nothing else the user could meaningfully click.
+  // A "top-level" candidate is either a standalone worktree or a whole group;
+  // member rows + member-scoped rows are nested sub-options of a group (the
+  // user is opting into a narrower scope), so they don't count toward the
+  // "is there exactly one choice" decision. This treats a group as equivalent
+  // to a single worktree for prefill purposes — matching how the rest of the
+  // automation surface uses groups interchangeably with worktrees.
+  // Guarded by a one-shot ref so a later worktree appearing or a remount
+  // after a manual edit can't clobber the choice.
   const { onSelect, currentValue } = props
   const autoPrefilledRef = React.useRef(false)
   React.useEffect(() => {
@@ -149,17 +153,15 @@ export function WorktreePicker(props: WorktreePickerProps): React.JSX.Element {
     if (currentValue && currentValue.length > 0) {
       return
     }
-    const candidates = entries.filter((e) => e.kind !== 'member-scoped')
-    if (candidates.length !== 1) {
+    const topLevel = entries.filter((e) => e.kind === 'group' || e.kind === 'worktree')
+    if (topLevel.length !== 1) {
       return
     }
     autoPrefilledRef.current = true
-    const only = candidates[0]
+    const only = topLevel[0]
     if (only.kind === 'group') {
       onSelect(only.group.id)
-    } else if (only.kind === 'member') {
-      onSelect(only.worktree.id)
-    } else if (only.kind === 'worktree') {
+    } else {
       onSelect(only.worktree.id)
     }
   }, [entries, currentValue, onSelect])

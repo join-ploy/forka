@@ -238,11 +238,12 @@ describe('WorktreePicker', () => {
       expect(onSelect).toHaveBeenCalledWith('member:group:abc:repo-a::/wt-x')
     })
 
-    // Why: auto-prefill rule for the group case — `member-scoped` rows never
-    // count as selectable defaults (opt-in semantics from Ask C). A group with
-    // a single member should still prefill to "the group itself" rather than
-    // "scoped to the only member".
-    it('auto-selects a sole group when no other candidate exists', async () => {
+    // Why: when there's exactly one TOP-LEVEL choice (a group or a standalone
+    // worktree), prefill it. Members + member-scoped rows are sub-options of
+    // the group — choosing a narrower scope is an explicit opt-in, not a
+    // default. Groups are treated as equivalent to worktrees for prefill so
+    // the user doesn't have to click the only thing they could pick.
+    it('prefills the sole group when no other top-level candidate exists', async () => {
       const singleMemberGroup = makeGroup({
         id: 'group:solo',
         memberWorktreeIds: [wtRepoA.id]
@@ -257,10 +258,23 @@ describe('WorktreePicker', () => {
           onSelect={onSelect}
         />
       )
-      // Two candidates: the group itself + the sole member. So no prefill —
-      // there's a real choice to make between scoping to the group (1 tab,
-      // group cwd) vs scoping to the member (still group-bound but member
-      // cwd). The auto-prefill only fires when there's truly one option.
+      expect(onSelect).toHaveBeenCalledTimes(1)
+      expect(onSelect).toHaveBeenCalledWith('group:solo')
+    })
+
+    it('does not prefill when there are multiple groups', async () => {
+      const groupA = makeGroup({ id: 'group:a', memberWorktreeIds: [wtRepoA.id] })
+      const groupB = makeGroup({ id: 'group:b', memberWorktreeIds: [wtRepoB.id] })
+      mockState = stateWith({ 'repo-a': [wtRepoA], 'repo-b': [wtRepoB] }, [groupA, groupB])
+      const { WorktreePicker } = await import('./WorktreePicker')
+      const onSelect = vi.fn()
+      render(
+        <WorktreePicker
+          projectId=""
+          target={{ kind: 'group', projectIds: ['repo-a', 'repo-b'] }}
+          onSelect={onSelect}
+        />
+      )
       expect(onSelect).not.toHaveBeenCalled()
     })
   })
