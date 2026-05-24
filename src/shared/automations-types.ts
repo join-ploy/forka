@@ -335,8 +335,16 @@ export type RunCommandConfig = {
 // other two refs leave the existing value alone when unset/empty.
 export type UpdateLinearIssueConfig = {
   issueRef: string // templated; usually {{trigger.linear.issue.id}}
-  assigneeRef?: string // templated or literal Linear userId; empty/unset = leave assignee alone
-  stateRef?: string // templated or literal Linear stateId; empty/unset = leave state alone
+  /** Linear team id — required to scope the assignee/state pickers in the
+   *  editor. Optional because users can fall back to template-mode refs
+   *  (e.g. echoing values from the trigger context) without picking a team.
+   *  The runner ignores this field; it exists solely for editor UX. */
+  teamId?: string
+  /** Linear userId (literal, picker-selected) OR a templated string when the
+   *  user toggles to template mode. Empty/unset = leave assignee alone. */
+  assigneeRef?: string
+  /** Linear stateId (literal) OR templated. Empty/unset = leave state alone. */
+  stateRef?: string
 }
 
 export type StepConfig =
