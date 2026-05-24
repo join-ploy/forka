@@ -13,9 +13,11 @@ import type { OrcaHooks, SidebarPromptCommand } from '../../../shared/types'
  *     `customCommand` directly for source='custom').
  *  2. Writing the prompt body to `~/.orca/prompts/<label>.md` (for review /
  *     create-pr; skipped for custom).
- *  3. Creating an inactive background terminal tab in the target worktree.
- *  4. Spawning the PTY directly so we can capture `ptyId` synchronously and
+ *  3. Spawning the PTY directly so we can capture `ptyId` synchronously and
  *     hand it back to the runner for exit tracking.
+ *  4. Attaching an inactive background terminal tab to the live PTY (createTab
+ *     with initialPtyId — see the spawn-first WHY comment below for the race
+ *     this ordering avoids).
  *
  * Why a direct spawn (not `invokeSidebarPromptCommand`): that helper drives
  * the active worktree and either piggybacks on an existing terminal (for
@@ -96,75 +98,37 @@ export function useAutomationOpenCommandPaneEvents(): void {
             launchCommand = `${cmd.command} "$(cat "${promptPath}")"`
           }
 
-          // Why: spawn the PTY immediately and attach an inactive tab to the
-          // live session — mirrors `launchAgentBackgroundSession`'s pattern so
-          // automation runs do not steal the worktree's focus.
-          const tab = store.createTab(worktreeId, undefined, undefined, { activate: false })
-          const paneKey = `${tab.id}:${FIRST_PANE_ID}`
+          // Why: spawn-first to avoid a TerminalPane auto-spawn race. The
+          // chain executor immediately reveals the new tab in the member's
+          // group card; if we createTab → await pty.spawn, TerminalPane mounts
+          // mid-await against a tab whose ptyId is still null, hits its
+          // FRESH SPAWN path, and binds a phantom shell to the visible pane
+          // while our explicit run-command PTY runs invisibly. Pre-mint the
+          // tabId, spawn the PTY against it, then call createTab with
+          // initialPtyId so TerminalPane never observes a tab without a PTY.
+          // See user reproduction in commit 7d26a9c5 diagnostics.
+          const tabId = globalThis.crypto.randomUUID()
+          const paneKey = `${tabId}:${FIRST_PANE_ID}`
           const paneEnv = {
             ORCA_PANE_KEY: paneKey,
-            ORCA_TAB_ID: tab.id,
+            ORCA_TAB_ID: tabId,
             ORCA_WORKTREE_ID: worktreeId
           }
-          // Why (debug-group-runcmd): capture the freshly-created tab state
-          // BEFORE pty.spawn so we can tell whether something (e.g. a parallel
-          // mount path) bound a PTY to the tab while our IPC was in flight.
-          // tab.ptyId here SHOULD be null — initialPtyId isn't passed.
-          const preSpawnPtyIds = useAppStore.getState().ptyIdsByTabId[tab.id]?.slice() ?? []
-          console.log('[debug-group-runcmd] pre-spawn', {
-            tabId: tab.id,
+          const result = await window.api.pty.spawn({
+            cols: 120,
+            rows: 40,
+            cwd: worktree.path,
+            command: launchCommand,
+            env: paneEnv,
+            connectionId: repo?.connectionId ?? null,
             worktreeId,
-            cwdSentToMain: worktree.path,
-            tabPtyId: tab.ptyId,
-            ptyIdsByTabIdLen: preSpawnPtyIds.length,
-            ptyIdsByTabId: preSpawnPtyIds
+            tabId,
+            leafId: 'pane:1'
           })
-          let result
-          try {
-            result = await window.api.pty.spawn({
-              cols: 120,
-              rows: 40,
-              cwd: worktree.path,
-              command: launchCommand,
-              env: paneEnv,
-              connectionId: repo?.connectionId ?? null,
-              worktreeId,
-              tabId: tab.id,
-              leafId: 'pane:1'
-            })
-          } catch (err) {
-            store.closeTab(tab.id)
-            throw err
-          }
-          // Why (debug-group-runcmd): is the freshly-spawned PTY id different
-          // from anything already bound? If so, the tab is racing two PTYs.
-          const beforeBindState = useAppStore.getState()
-          const beforeBindTab = beforeBindState.tabsByWorktree[worktreeId]?.find(
-            (t) => t.id === tab.id
-          )
-          console.log('[debug-group-runcmd] post-spawn pre-bind', {
-            tabId: tab.id,
-            spawnedPtyId: result.id,
-            tabPtyId: beforeBindTab?.ptyId ?? null,
-            ptyIdsByTabIdLen: (beforeBindState.ptyIdsByTabId[tab.id] ?? []).length,
-            ptyIdsByTabId: beforeBindState.ptyIdsByTabId[tab.id]?.slice() ?? []
-          })
-          store.updateTabPtyId(tab.id, result.id)
-          // Why (debug-group-runcmd): after the binding call, did tab.ptyId
-          // actually pick up our explicit spawn id? If a phantom PTY was first,
-          // tab.ptyId will NOT equal result.id (terminals.ts:919 preserves the
-          // existing tab.ptyId).
-          const afterBindState = useAppStore.getState()
-          const afterBindTab = afterBindState.tabsByWorktree[worktreeId]?.find(
-            (t) => t.id === tab.id
-          )
-          console.log('[debug-group-runcmd] post-bind', {
-            tabId: tab.id,
-            spawnedPtyId: result.id,
-            tabPtyId: afterBindTab?.ptyId ?? null,
-            tabPtyIdMatchesSpawn: afterBindTab?.ptyId === result.id,
-            ptyIdsByTabIdLen: (afterBindState.ptyIdsByTabId[tab.id] ?? []).length,
-            ptyIdsByTabId: afterBindState.ptyIdsByTabId[tab.id]?.slice() ?? []
+          store.createTab(worktreeId, undefined, undefined, {
+            activate: false,
+            id: tabId,
+            initialPtyId: result.id
           })
 
           window.api.automations.replyOpenCommandPane(requestId, {
