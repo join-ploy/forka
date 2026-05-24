@@ -136,10 +136,13 @@ export function RunPanelGroupView({
     status: runScriptStatusToSegmentStatus(m.runState?.status ?? null)
   }))
   const aggregated = aggregateGroupRunStatus(segments.map((s) => s.status))
-  // Why: atomic semantics — show Stop while ANY member has a live PTY, else
-  // show Start. A mixed state (some running, some exited) still surfaces Stop
-  // so the user can halt the surviving members in one click.
-  const anyRunning = aggregated === 'running'
+  // Why: atomic semantics — show Stop while ANY member is still running,
+  // including the mixed case where one script has already failed and another
+  // is still alive. Computing this from the raw segments (rather than from
+  // `aggregated`) matters because the aggregate collapses to 'failed' the
+  // moment any member exits non-zero, which would otherwise hide Stop while
+  // sibling members are still consuming the user's clock.
+  const anyRunning = segments.some((s) => s.status === 'running')
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">

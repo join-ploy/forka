@@ -1,3 +1,6 @@
+/* eslint-disable max-lines -- Why: RunPanel + group view tests share builders
+   and mocks; keeping them in one file avoids duplicating the renderToStaticMarkup
+   harness + the makeRunMember/IDLE_RUN_STATE fixtures across files. */
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { ScriptState } from '@/store/slices/scripts'
@@ -386,6 +389,42 @@ describe('RunPanelGroupView — segmented mode', () => {
     )
     const stopMatches = html.match(/aria-label="Stop all run scripts"/g) ?? []
     expect(stopMatches).toHaveLength(1)
+    expect(html).not.toMatch(/aria-label="Start all run scripts"/)
+  })
+
+  it('still shows Stop-all when one member has failed but another is still running', async () => {
+    // Why: regression — `anyRunning` used to be derived from the aggregated
+    // status, which collapses to 'failed' the moment any member exits
+    // non-zero. That hid Stop while sibling members were still consuming
+    // the user's clock. Compute it directly from segment statuses instead.
+    const { RunPanelGroupView } = await import('./RunPanelGroupView')
+    const members = [
+      makeRunMember({
+        worktreeId: 'wt-a',
+        repoId: 'repo-a',
+        repoName: 'alpha',
+        status: 'exited-failure',
+        exitCode: 1
+      }),
+      makeRunMember({
+        worktreeId: 'wt-b',
+        repoId: 'repo-b',
+        repoName: 'bravo',
+        status: 'running',
+        ptyId: 'p-b'
+      })
+    ]
+    const html = renderToStaticMarkup(
+      <RunPanelGroupView
+        members={members}
+        activeRepoId="repo-a"
+        onSelectRepo={() => {}}
+        onStartAll={() => {}}
+        onStopAll={() => {}}
+        isDispatching={false}
+      />
+    )
+    expect(html).toMatch(/aria-label="Stop all run scripts"/)
     expect(html).not.toMatch(/aria-label="Start all run scripts"/)
   })
 
