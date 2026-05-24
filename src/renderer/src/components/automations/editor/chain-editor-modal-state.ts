@@ -8,6 +8,7 @@ import type {
   StepConfig,
   StepKind,
   TriggerConfig,
+  UpdateLinearIssueConfig,
   WaitForSetupConfig
 } from '../../../../../shared/automations-types'
 import type { Repo } from '../../../../../shared/types'
@@ -38,19 +39,22 @@ export const STEP_KIND_LABELS: Record<StepKind, string> = {
   'create-workspace-group': 'Create workspace group',
   'wait-for-setup': 'Wait for setup',
   'run-prompt': 'Run prompt',
-  'run-command': 'Run command'
+  'run-command': 'Run command',
+  'update-linear-issue': 'Update Linear issue'
 }
 
 // Why: `create-workspace-group` slots in next to `create-worktree` so the picker
-// groups "creation" kinds together visually. ChainEditorModal filters this list
-// down by removing `create-workspace-group` when settings.experimentalGroupedWorkspaces
-// is false.
+// groups "creation" kinds together visually. `update-linear-issue` slots next
+// to `run-prompt` / `run-command` — it's an effect step, not a creation step.
+// ChainEditorModal filters this list down by removing `create-workspace-group`
+// when settings.experimentalGroupedWorkspaces is false.
 export const STEP_KIND_ORDER: StepKind[] = [
   'create-worktree',
   'create-workspace-group',
   'wait-for-setup',
   'run-prompt',
-  'run-command'
+  'run-command',
+  'update-linear-issue'
 ]
 
 // Why: legacy schedule/dispatch fields are dormant in v2 (manual trigger only)
@@ -376,6 +380,14 @@ export function defaultConfigForKind(kind: StepKind): StepConfig {
         worktreeRef: '',
         source: 'review',
         captureStdout: false
+      }
+      return cfg
+    }
+    case 'update-linear-issue': {
+      const cfg: UpdateLinearIssueConfig = {
+        issueRef: '',
+        assigneeRef: '',
+        stateRef: ''
       }
       return cfg
     }

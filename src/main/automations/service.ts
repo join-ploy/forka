@@ -31,6 +31,8 @@ import {
   CreateWorkspaceGroupRunner,
   type CreateWorkspaceGroupDeps
 } from './runners/create-workspace-group-runner'
+import { UpdateLinearIssueRunner } from './runners/update-linear-issue-runner'
+import { updateIssue as linearUpdateIssue } from '../linear/issues'
 import type { StepRunner } from './step-runner'
 import { splitWorktreeId } from '../../shared/worktree-id'
 
@@ -142,6 +144,7 @@ export class AutomationService {
   private readonly runCommandRunner: RunCommandRunner
   private readonly createWorktreeRunner: CreateWorktreeRunner
   private readonly createWorkspaceGroupRunner: CreateWorkspaceGroupRunner
+  private readonly updateLinearIssueRunner: UpdateLinearIssueRunner
   private readonly chainExecutor: ChainExecutor
 
   constructor(store: Store, opts: AutomationServiceOpts = {}) {
@@ -289,6 +292,13 @@ export class AutomationService {
       // runner.
       getRepoDescription: (repoId) => this.store.getRepo(repoId)?.description,
       now: () => Date.now()
+    })
+
+    this.updateLinearIssueRunner = new UpdateLinearIssueRunner({
+      // Why: pass the bound Linear API call directly. The runner's narrow dep
+      // shape lets tests stub without touching the Linear SDK; production
+      // wiring uses the module-level singleton client managed in linear/client.
+      updateIssue: (id, updates) => linearUpdateIssue(id, updates)
     })
 
     this.chainExecutor = new ChainExecutor({
@@ -529,6 +539,9 @@ export class AutomationService {
     if (kind === 'create-workspace-group') {
       return this.createWorkspaceGroupRunner
     }
+    if (kind === 'update-linear-issue') {
+      return this.updateLinearIssueRunner
+    }
     return undefined
   }
 
@@ -737,7 +750,8 @@ export class AutomationService {
       this.waitForSetupRunner,
       this.runCommandRunner,
       this.createWorktreeRunner,
-      this.createWorkspaceGroupRunner
+      this.createWorkspaceGroupRunner,
+      this.updateLinearIssueRunner
     ]
   }
 

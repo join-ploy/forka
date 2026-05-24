@@ -8,7 +8,8 @@ import type {
   CreateWorktreeConfig,
   WaitForSetupConfig,
   RunPromptConfig,
-  RunCommandConfig
+  RunCommandConfig,
+  UpdateLinearIssueConfig
 } from '../../../shared/automations-types'
 
 /**
@@ -215,6 +216,19 @@ export function walkStepConfigStrings(
       }
       break
     }
+    case 'update-linear-issue': {
+      const c = config as UpdateLinearIssueConfig
+      if (typeof c.issueRef === 'string') {
+        visit('issueRef', c.issueRef)
+      }
+      if (typeof c.assigneeRef === 'string') {
+        visit('assigneeRef', c.assigneeRef)
+      }
+      if (typeof c.stateRef === 'string') {
+        visit('stateRef', c.stateRef)
+      }
+      break
+    }
   }
 }
 
@@ -274,6 +288,15 @@ function rewriteConfigStrings(
             ? transform(c.customCommand)
             : c.customCommand,
         paneRef: typeof c.paneRef === 'string' ? transform(c.paneRef) : c.paneRef
+      }
+    }
+    case 'update-linear-issue': {
+      const c = config as UpdateLinearIssueConfig
+      return {
+        ...c,
+        issueRef: typeof c.issueRef === 'string' ? transform(c.issueRef) : c.issueRef,
+        assigneeRef: typeof c.assigneeRef === 'string' ? transform(c.assigneeRef) : c.assigneeRef,
+        stateRef: typeof c.stateRef === 'string' ? transform(c.stateRef) : c.stateRef
       }
     }
   }

@@ -5,6 +5,7 @@ import {
   Hourglass,
   Sparkles,
   TerminalSquare,
+  Ticket,
   GripVertical,
   Trash2
 } from 'lucide-react'
@@ -35,7 +36,8 @@ const KIND_META: Record<
   'create-workspace-group': { label: 'Create workspace group', icon: FolderTree },
   'wait-for-setup': { label: 'Wait for setup', icon: Hourglass },
   'run-prompt': { label: 'Run prompt', icon: Sparkles },
-  'run-command': { label: 'Run command', icon: TerminalSquare }
+  'run-command': { label: 'Run command', icon: TerminalSquare },
+  'update-linear-issue': { label: 'Update Linear issue', icon: Ticket }
 }
 
 /**

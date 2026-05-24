@@ -7,6 +7,7 @@ import { CreateWorkspaceGroupStepCard } from './CreateWorkspaceGroupStepCard'
 import { WaitForSetupStepCard } from './WaitForSetupStepCard'
 import { RunPromptStepCard } from './RunPromptStepCard'
 import { RunCommandStepCard } from './RunCommandStepCard'
+import { UpdateLinearIssueStepCard } from './UpdateLinearIssueStepCard'
 
 export type ChainEditorStepCardRouterProps = {
   step: Step
@@ -66,5 +67,7 @@ export function ChainEditorStepCardRouter(
           onConfigChange={props.onConfigChange}
         />
       )
+    case 'update-linear-issue':
+      return <UpdateLinearIssueStepCard {...common} onConfigChange={props.onConfigChange} />
   }
 }

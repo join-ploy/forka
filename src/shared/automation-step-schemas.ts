@@ -44,6 +44,11 @@ export const RUN_COMMAND_OUTPUT_SCHEMA: OutputSchema = {
   outputTail: 'string'
 }
 
+// Why: the step's value is the side-effect on Linear (assignee/state change),
+// not template-consumable output. The empty schema keeps SCHEMA_BY_KIND
+// exhaustive so a new StepKind without a matching schema is a compile error.
+export const UPDATE_LINEAR_ISSUE_OUTPUT_SCHEMA: OutputSchema = {}
+
 export const MANUAL_TRIGGER_SCHEMA: OutputSchema = {
   firedAt: 'number',
   actorEmail: 'string'
@@ -74,7 +79,8 @@ const SCHEMA_BY_KIND: Record<StepKind, OutputSchema> = {
   'create-workspace-group': CREATE_WORKSPACE_GROUP_OUTPUT_SCHEMA,
   'wait-for-setup': WAIT_FOR_SETUP_OUTPUT_SCHEMA,
   'run-prompt': RUN_PROMPT_OUTPUT_SCHEMA,
-  'run-command': RUN_COMMAND_OUTPUT_SCHEMA
+  'run-command': RUN_COMMAND_OUTPUT_SCHEMA,
+  'update-linear-issue': UPDATE_LINEAR_ISSUE_OUTPUT_SCHEMA
 }
 
 export function getOutputSchemaForKind(kind: StepKind): OutputSchema {

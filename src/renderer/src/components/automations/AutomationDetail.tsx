@@ -23,6 +23,7 @@ import type {
   StepRunStatus,
   TriggerConfig,
   TriggerSourceId,
+  UpdateLinearIssueConfig,
   WaitForSetupConfig
 } from '../../../../shared/automations-types'
 import type { Repo, Worktree } from '../../../../shared/types'
@@ -428,7 +429,8 @@ const STEP_KIND_LABELS: Record<Step['kind'], string> = {
   'create-workspace-group': 'Create workspace group',
   'wait-for-setup': 'Wait for setup',
   'run-prompt': 'Run prompt',
-  'run-command': 'Run command'
+  'run-command': 'Run command',
+  'update-linear-issue': 'Update Linear issue'
 }
 
 function firstNonEmptyLine(value: string): string {
@@ -475,6 +477,20 @@ function describeStepConfig(step: Step): string {
       }
       const custom = (config as RunCommandConfig & { customCommand?: string }).customCommand
       return firstNonEmptyLine(custom ?? '') || 'Custom command'
+    }
+    case 'update-linear-issue': {
+      const config = step.config as UpdateLinearIssueConfig
+      const parts: string[] = []
+      if (config.assigneeRef && config.assigneeRef.trim().length > 0) {
+        parts.push('assignee')
+      }
+      if (config.stateRef && config.stateRef.trim().length > 0) {
+        parts.push('state')
+      }
+      if (parts.length === 0) {
+        return 'No updates configured'
+      }
+      return `Set ${parts.join(' + ')}`
     }
   }
 }

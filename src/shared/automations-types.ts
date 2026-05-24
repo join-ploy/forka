@@ -258,6 +258,7 @@ export type StepKind =
   | 'create-workspace-group'
   | 'wait-for-setup'
   | 'run-command'
+  | 'update-linear-issue'
 
 export type RunPromptConfig = {
   worktreeRef: string
@@ -329,12 +330,22 @@ export type RunCommandConfig = {
   paneRef?: string
 }
 
+// Mutates a Linear issue's assignee and/or stateId at run time. `issueRef` is
+// almost always `{{trigger.linear.issue.id}}` from a Linear auto-trigger; the
+// other two refs leave the existing value alone when unset/empty.
+export type UpdateLinearIssueConfig = {
+  issueRef: string // templated; usually {{trigger.linear.issue.id}}
+  assigneeRef?: string // templated or literal Linear userId; empty/unset = leave assignee alone
+  stateRef?: string // templated or literal Linear stateId; empty/unset = leave state alone
+}
+
 export type StepConfig =
   | RunPromptConfig
   | CreateWorktreeConfig
   | CreateWorkspaceGroupConfig
   | WaitForSetupConfig
   | RunCommandConfig
+  | UpdateLinearIssueConfig
 
 export type Step = {
   id: string
