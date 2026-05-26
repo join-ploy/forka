@@ -16,6 +16,7 @@ import type {
   StepOrGroup,
   TriggerSourceId
 } from '../../shared/automations-types'
+import type { TuiAgent } from '../../shared/types'
 import type { CandidateEvent } from './trigger-sources/types'
 import type { AgentStatusEntry } from '../agent-status/registry'
 import type { SetupScriptEntry } from '../setup-script/registry'
@@ -37,6 +38,9 @@ import { UpdateLinearIssueRunner } from './runners/update-linear-issue-runner'
 import { updateIssue as linearUpdateIssue } from '../linear/issues'
 import type { StepRunner } from './step-runner'
 import { splitWorktreeId } from '../../shared/worktree-id'
+import { hasPromptTargetChangesFromMain } from './prompt-target-main-changes'
+import { inferSidebarPromptAgent } from '../../shared/sidebar-prompt-agent'
+import { getEffectiveHooks } from '../hooks'
 
 // Why: duplicated from renderer's chain-editor-state because that module is
 // renderer-only. Kept inline to avoid a new shared runtime file for a one-liner.
@@ -238,6 +242,40 @@ export class AutomationService {
           parentPath: group.parentPath,
           firstMemberWorktreeId,
           connectionId: repo?.connectionId ?? null
+        }
+      },
+      getGroupMemberWorktreeIds: (groupId) => {
+        return (
+          this.store.getWorkspaceGroups().find((g) => g.id === groupId)?.memberWorktreeIds ?? null
+        )
+      },
+      hasChangesFromMain: hasPromptTargetChangesFromMain,
+      resolvePresetPrompt: async ({
+        source,
+        commandId,
+        promptOverride,
+        fallbackAgentId,
+        worktreeId
+      }) => {
+        const settings = this.store.getSettings()
+        const commands = source === 'review' ? settings.reviewCommands : settings.createPrCommands
+        const cmd = commands.find((entry) => entry.id === commandId)
+        if (!cmd) {
+          throw new Error(
+            `No ${source === 'review' ? 'Review' : 'Create PR'} prompt with id "${commandId ?? ''}" is configured.`
+          )
+        }
+        const parsed = splitWorktreeId(worktreeId)
+        const repo = parsed ? this.store.getRepo(parsed.repoId) : null
+        const hooks = repo ? getEffectiveHooks(repo, parsed?.worktreePath) : null
+        const preferences =
+          source === 'review' ? hooks?.reviewPreferences : hooks?.createPrPreferences
+        const basePrompt =
+          promptOverride != null && promptOverride.trim().length > 0 ? promptOverride : cmd.prompt
+        const prompt = preferences ? `${basePrompt}\n\n${preferences}` : basePrompt
+        return {
+          agentId: inferSidebarPromptAgent(cmd.command) ?? (fallbackAgentId as TuiAgent),
+          prompt
         }
       },
       // Why: scope outputTail capture to the agent's current turn so the

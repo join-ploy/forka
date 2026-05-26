@@ -1367,6 +1367,7 @@ export type PreloadApi = {
     onOpenPromptPane: (
       callback: (request: {
         requestId: string
+        dedupeKey?: string
         worktreeId: string
         agentId: string
         prompt: string
@@ -1393,6 +1394,7 @@ export type PreloadApi = {
     onOpenCommandPane: (
       callback: (request: {
         requestId: string
+        dedupeKey?: string
         worktreeId: string
         worktreePath?: string
         connectionId?: string | null

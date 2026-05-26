@@ -29,6 +29,8 @@ describe('RunPromptStepCard', () => {
       step={makeStep()}
       stepIndex={2}
       available={EMPTY_AVAIL}
+      reviewCommands={[]}
+      createPrCommands={[]}
       onIdChange={() => {}}
       onConfigChange={() => {}}
       onOnFailureChange={() => {}}
@@ -66,6 +68,46 @@ describe('RunPromptStepCard', () => {
     expect(markup).toContain('Done debounce (seconds)')
   })
 
+  it('renders the clean-main skip checkbox', () => {
+    expect(markup).toMatch(/aria-label=["']Skip if no changes from main["']/)
+    expect(markup).toContain('Skip if no changes from main')
+  })
+
+  it('renders stored prompt controls and disables the agent for preset-backed prompts', () => {
+    const step = makeStep({
+      source: 'review',
+      commandId: 'review-codex',
+      promptOverride: 'Review {{trigger.title}}'
+    })
+    const m = renderToStaticMarkup(
+      <RunPromptStepCard
+        step={step}
+        stepIndex={2}
+        available={EMPTY_AVAIL}
+        reviewCommands={[
+          {
+            id: 'review-codex',
+            label: 'Codex Review',
+            command: 'codex',
+            prompt: 'Stored review prompt'
+          }
+        ]}
+        createPrCommands={[]}
+        onIdChange={() => {}}
+        onConfigChange={() => {}}
+        onOnFailureChange={() => {}}
+        onTimeoutChange={() => {}}
+        onDelete={() => {}}
+      />
+    )
+    expect(m).toMatch(/aria-label=["']Prompt source["']/)
+    expect(m).toMatch(/aria-label=["']Stored prompt["']/)
+    expect(m).toContain('Codex Review')
+    expect(m).toContain('Review {{trigger.title}}')
+    expect(m).toContain('Stored prompt selects the agent.')
+    expect(m).toMatch(/aria-label=["']Agent["'][^>]*disabled/)
+  })
+
   it('renders the kind badge from StepCardChrome', () => {
     expect(markup).toContain('Run prompt')
   })
@@ -82,6 +124,8 @@ describe('RunPromptStepCard', () => {
         step={stepWithPane}
         stepIndex={2}
         available={EMPTY_AVAIL}
+        reviewCommands={[]}
+        createPrCommands={[]}
         onIdChange={() => {}}
         onConfigChange={() => {}}
         onOnFailureChange={() => {}}
@@ -100,6 +144,8 @@ describe('RunPromptStepCard', () => {
         step={stepWithPane}
         stepIndex={2}
         available={EMPTY_AVAIL}
+        reviewCommands={[]}
+        createPrCommands={[]}
         onIdChange={() => {}}
         onConfigChange={() => {}}
         onOnFailureChange={() => {}}
@@ -111,6 +157,37 @@ describe('RunPromptStepCard', () => {
     // and renders the explanatory note.
     expect(m).toMatch(/opacity-50/)
     expect(m).toContain('Pane already has an agent.')
+  })
+
+  it('prioritizes paneRef as the agent owner for preset-backed prompts', () => {
+    const step = makeStep({
+      source: 'review',
+      commandId: 'review-codex',
+      paneRef: '{{steps.rp-0.paneKey}}'
+    })
+    const m = renderToStaticMarkup(
+      <RunPromptStepCard
+        step={step}
+        stepIndex={2}
+        available={EMPTY_AVAIL}
+        reviewCommands={[
+          {
+            id: 'review-codex',
+            label: 'Codex Review',
+            command: 'codex',
+            prompt: 'Stored review prompt'
+          }
+        ]}
+        createPrCommands={[]}
+        onIdChange={() => {}}
+        onConfigChange={() => {}}
+        onOnFailureChange={() => {}}
+        onTimeoutChange={() => {}}
+        onDelete={() => {}}
+      />
+    )
+    expect(m).toContain('Pane already has an agent.')
+    expect(m).not.toContain('Stored prompt selects the agent.')
   })
 
   it('keeps the agentId select bright when paneRef is empty', () => {

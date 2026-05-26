@@ -263,9 +263,18 @@ export type StepKind =
 
 export type RunPromptConfig = {
   worktreeRef: string
+  /** Defaults to 'custom' for automations persisted before prompt presets. */
+  source?: 'custom' | 'review' | 'create-pr'
   agentId: TuiAgent
+  commandId?: string
   prompt: string
+  /** Per-step copy of a stored Review/Create PR prompt. The settings prompt is
+   *  never mutated; editing a preset-backed node writes only this override. */
+  promptOverride?: string
   doneDebounceSeconds: number
+  /** When true, skip the prompt if the scoped worktree/group has no diff
+   *  against main and no local working tree changes. */
+  skipIfNoChangesFromMain?: boolean
   // Optional handle for reusing an existing pane instead of opening a new one.
   paneRef?: string
 }

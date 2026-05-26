@@ -52,6 +52,7 @@ describe('RunCommandRunner', () => {
     })
     const next = await runner.tick(baseCtx())
     expect(openCommandPane).toHaveBeenCalledWith({
+      dedupeKey: 'r1:run-review',
       worktreeId: 'wt-1',
       source: 'review',
       commandId: 'cmd-review-1',
@@ -88,6 +89,7 @@ describe('RunCommandRunner', () => {
       })
     )
     expect(openCommandPane).toHaveBeenCalledWith({
+      dedupeKey: 'r1:run-review',
       worktreeId: 'wt-from-template',
       source: 'custom',
       commandId: undefined,
@@ -452,6 +454,7 @@ describe('RunCommandRunner', () => {
     await runner.tick(baseCtx({ step }))
     expect(getGroupSummary).toHaveBeenCalledWith('group:abc-1234')
     expect(openCommandPane).toHaveBeenCalledWith({
+      dedupeKey: 'r1:run-review',
       worktreeId: 'repo-a::/workspaces/g/repo-a',
       worktreePath: '/workspaces/g',
       connectionId: null,
@@ -506,6 +509,7 @@ describe('RunCommandRunner', () => {
     }
     await runner.tick(baseCtx({ step }))
     expect(openCommandPane).toHaveBeenCalledWith({
+      dedupeKey: 'r1:run-review',
       worktreeId: 'repo-a::/workspaces/g/repo-a',
       source: 'review',
       commandId: 'cmd-review-1',

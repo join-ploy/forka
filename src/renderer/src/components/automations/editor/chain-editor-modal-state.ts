@@ -225,8 +225,20 @@ function repoFolderName(repoPath: string): string {
 export function computeAllErrors(draft: ChainDraft, repos: Repo[] = []): ChainEditorError[] {
   const all: ChainEditorError[] = []
   const flat = flattenSteps(draft.steps)
+  const seenStepIds = new Set<string>()
   for (let i = 0; i < flat.length; i++) {
     const step = flat[i]
+    if (seenStepIds.has(step.id)) {
+      all.push({
+        path: step.id,
+        code: 'unknown-path',
+        message: `Step id '${step.id}' is used more than once. Parallel automation steps must have unique ids.`,
+        stepId: step.id,
+        field: 'id'
+      })
+    } else {
+      seenStepIds.add(step.id)
+    }
     const available = getAvailableVariablesAtStep(draft, i, repos)
     walkStepConfigStrings(step.config, step.kind, (field, value) => {
       const errs = dryRunTemplate(value, available)
@@ -434,9 +446,11 @@ export function defaultConfigForKind(kind: StepKind): StepConfig {
     case 'run-prompt': {
       const cfg: RunPromptConfig = {
         worktreeRef: '',
+        source: 'custom',
         agentId: 'claude',
         prompt: '',
-        doneDebounceSeconds: 5
+        doneDebounceSeconds: 5,
+        skipIfNoChangesFromMain: false
       }
       return cfg
     }

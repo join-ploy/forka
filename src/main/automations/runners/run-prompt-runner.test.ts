@@ -36,12 +36,114 @@ describe('RunPromptRunner', () => {
     const ctx: StepRunnerCtx = { runId: 'r1', step: baseStep, state: baseState, context: {} }
     const next = await runner.tick(ctx)
     expect(openPromptPane).toHaveBeenCalledWith({
+      dedupeKey: 'r1:send-prompt',
       worktreeId: 'wt-123',
       agentId: 'claude',
       prompt: 'Hello'
     })
     expect(next.status).toBe('running')
     expect(next.outcome).toBe('needs-more-time')
+  })
+
+  it('skips without opening a pane when configured and the worktree has no changes from main', async () => {
+    const openPromptPane = vi.fn().mockResolvedValue({ paneKey: 'tab-1:pane-1' })
+    const hasChangesFromMain = vi.fn().mockResolvedValue({
+      hasChanges: false,
+      checkedWorktreeIds: ['wt-123']
+    })
+    const runner = new RunPromptRunner({
+      openPromptPane,
+      getAgentStatus: vi.fn().mockReturnValue(undefined),
+      getWorktreeSummary: vi.fn().mockReturnValue({ path: '/work/wt-123', connectionId: null }),
+      hasChangesFromMain,
+      now: () => 0
+    })
+    const step: Step = {
+      ...baseStep,
+      config: { ...baseStep.config, skipIfNoChangesFromMain: true }
+    }
+    const ctx: StepRunnerCtx = { runId: 'r-clean', step, state: baseState, context: {} }
+    const next = await runner.tick(ctx)
+    expect(hasChangesFromMain).toHaveBeenCalledWith([
+      { worktreeId: 'wt-123', path: '/work/wt-123', connectionId: null }
+    ])
+    expect(openPromptPane).not.toHaveBeenCalled()
+    expect(next).toMatchObject({
+      outcome: 'done',
+      status: 'skipped',
+      output: { reason: 'No changes from main', checkedWorktreeIds: ['wt-123'] }
+    })
+  })
+
+  it('opens the pane when the skip check finds changes', async () => {
+    const openPromptPane = vi.fn().mockResolvedValue({ paneKey: 'tab-1:pane-1' })
+    const runner = new RunPromptRunner({
+      openPromptPane,
+      getAgentStatus: vi.fn().mockReturnValue(undefined),
+      getWorktreeSummary: vi.fn().mockReturnValue({ path: '/work/wt-123', connectionId: null }),
+      hasChangesFromMain: vi.fn().mockResolvedValue({
+        hasChanges: true,
+        checkedWorktreeIds: ['wt-123']
+      }),
+      now: () => 0
+    })
+    const step: Step = {
+      ...baseStep,
+      config: { ...baseStep.config, skipIfNoChangesFromMain: true }
+    }
+    const ctx: StepRunnerCtx = { runId: 'r-dirty', step, state: baseState, context: {} }
+    const next = await runner.tick(ctx)
+    expect(openPromptPane).toHaveBeenCalledWith({
+      dedupeKey: 'r-dirty:send-prompt',
+      worktreeId: 'wt-123',
+      agentId: 'claude',
+      prompt: 'Hello',
+      worktreePath: '/work/wt-123',
+      connectionId: null
+    })
+    expect(next.outcome).toBe('needs-more-time')
+  })
+
+  it('resolves a stored Review prompt before opening the pane', async () => {
+    const openPromptPane = vi.fn().mockResolvedValue({ paneKey: 'tab-1:pane-1' })
+    const resolvePresetPrompt = vi.fn().mockResolvedValue({
+      agentId: 'codex',
+      prompt: 'Review {{trigger.title}}'
+    })
+    const runner = new RunPromptRunner({
+      openPromptPane,
+      getAgentStatus: vi.fn().mockReturnValue(undefined),
+      resolvePresetPrompt,
+      now: () => 0
+    })
+    const step: Step = {
+      ...baseStep,
+      config: {
+        ...baseStep.config,
+        source: 'review',
+        commandId: 'review-1',
+        promptOverride: 'ignored by fake resolver'
+      }
+    }
+    await runner.tick({
+      runId: 'r-review',
+      step,
+      state: baseState,
+      context: { trigger: { title: 'diff' } }
+    })
+    expect(resolvePresetPrompt).toHaveBeenCalledWith({
+      source: 'review',
+      commandId: 'review-1',
+      promptOverride: 'ignored by fake resolver',
+      fallbackAgentId: 'claude',
+      worktreeId: 'wt-123'
+    })
+    expect(openPromptPane).toHaveBeenCalledWith({
+      dedupeKey: 'r-review:send-prompt',
+      worktreeId: 'wt-123',
+      agentId: 'codex',
+      prompt: 'Review diff'
+    })
   })
 
   it('resolves templated worktreeRef and prompt from context before opening the pane', async () => {
@@ -70,6 +172,7 @@ describe('RunPromptRunner', () => {
     }
     await runner.tick(ctx)
     expect(openPromptPane).toHaveBeenCalledWith({
+      dedupeKey: 'r2:send-prompt',
       worktreeId: 'wt-from-template',
       agentId: 'claude',
       prompt: 'Implement Fix X'
@@ -178,7 +281,7 @@ describe('RunPromptRunner', () => {
     expect(tick3).toEqual({ outcome: 'needs-more-time', status: 'running' })
   })
 
-  it('fails when the agent reports blocked', async () => {
+  it('waits without failing when the agent reports blocked', async () => {
     const openPromptPane = vi.fn().mockResolvedValue({ paneKey: 'p1' })
     let now = 0
     let state: 'working' | 'blocked' | 'waiting' | 'done' = 'working'
@@ -192,12 +295,10 @@ describe('RunPromptRunner', () => {
     now = 1_000
     state = 'blocked'
     const result = await runner.tick(ctx)
-    expect(result.outcome).toBe('failed')
-    expect(result.status).toBe('failed')
-    expect(result.error).toMatch(/needs human input.*blocked/)
+    expect(result).toEqual({ outcome: 'needs-more-time', status: 'waiting' })
   })
 
-  it('fails when the agent reports waiting', async () => {
+  it('waits without failing when the agent reports waiting', async () => {
     const openPromptPane = vi.fn().mockResolvedValue({ paneKey: 'p1' })
     let now = 0
     let state: 'working' | 'blocked' | 'waiting' | 'done' = 'working'
@@ -211,9 +312,7 @@ describe('RunPromptRunner', () => {
     now = 1_000
     state = 'waiting'
     const result = await runner.tick(ctx)
-    expect(result.outcome).toBe('failed')
-    expect(result.status).toBe('failed')
-    expect(result.error).toMatch(/needs human input.*waiting/)
+    expect(result).toEqual({ outcome: 'needs-more-time', status: 'waiting' })
   })
 
   it('requires done to persist past the debounce window before succeeding', async () => {
@@ -448,6 +547,7 @@ describe('RunPromptRunner', () => {
     // The agent is bound to the first member's worktreeId (UI binding) and
     // its CWD points at the group's parentPath (where `pwd` lands).
     expect(openPromptPane).toHaveBeenCalledWith({
+      dedupeKey: 'r-group:send-prompt',
       worktreeId: 'repo-a::/orca/workspaces/feat-x/repo-a',
       agentId: 'claude',
       prompt: 'Hello',
@@ -455,6 +555,71 @@ describe('RunPromptRunner', () => {
       connectionId: null
     })
     expect(result.outcome).toBe('needs-more-time')
+  })
+
+  it('skips a group-scoped prompt only after checking every group member', async () => {
+    const openPromptPane = vi.fn().mockResolvedValue({ paneKey: 'tab-grp:pane-1' })
+    const getGroupSummary = vi.fn().mockReturnValue({
+      parentPath: '/orca/workspaces/feat-x',
+      firstMemberWorktreeId: 'repo-a::/orca/workspaces/feat-x/repo-a',
+      connectionId: null
+    })
+    const getGroupMemberWorktreeIds = vi
+      .fn()
+      .mockReturnValue([
+        'repo-a::/orca/workspaces/feat-x/repo-a',
+        'repo-b::/orca/workspaces/feat-x/repo-b'
+      ])
+    const getWorktreeSummary = vi.fn((worktreeId: string) => ({
+      path: worktreeId.endsWith('/repo-a')
+        ? '/orca/workspaces/feat-x/repo-a'
+        : '/orca/workspaces/feat-x/repo-b',
+      connectionId: null
+    }))
+    const hasChangesFromMain = vi.fn().mockResolvedValue({
+      hasChanges: false,
+      checkedWorktreeIds: [
+        'repo-a::/orca/workspaces/feat-x/repo-a',
+        'repo-b::/orca/workspaces/feat-x/repo-b'
+      ]
+    })
+    const runner = new RunPromptRunner({
+      openPromptPane,
+      getAgentStatus: vi.fn().mockReturnValue(undefined),
+      getGroupSummary,
+      getGroupMemberWorktreeIds,
+      getWorktreeSummary,
+      hasChangesFromMain,
+      now: () => 0
+    })
+    const step: Step = {
+      ...baseStep,
+      config: {
+        ...baseStep.config,
+        worktreeRef: 'group:abc-123',
+        skipIfNoChangesFromMain: true
+      }
+    }
+    const result = await runner.tick({
+      runId: 'r-group-clean',
+      step,
+      state: baseState,
+      context: {}
+    })
+    expect(hasChangesFromMain).toHaveBeenCalledWith([
+      {
+        worktreeId: 'repo-a::/orca/workspaces/feat-x/repo-a',
+        path: '/orca/workspaces/feat-x/repo-a',
+        connectionId: null
+      },
+      {
+        worktreeId: 'repo-b::/orca/workspaces/feat-x/repo-b',
+        path: '/orca/workspaces/feat-x/repo-b',
+        connectionId: null
+      }
+    ])
+    expect(openPromptPane).not.toHaveBeenCalled()
+    expect(result.status).toBe('skipped')
   })
 
   it('fails fast when worktreeRef resolves to a group:<id> the store cannot find', async () => {
@@ -510,6 +675,7 @@ describe('RunPromptRunner', () => {
     expect(getWorktreeSummary).toHaveBeenCalledWith('repo-a::/orca/workspaces/feat-x/repo-a')
     expect(getGroupSummary).not.toHaveBeenCalled()
     expect(openPromptPane).toHaveBeenCalledWith({
+      dedupeKey: 'r-ms:send-prompt',
       worktreeId: 'repo-a::/orca/workspaces/feat-x/repo-a',
       agentId: 'claude',
       prompt: 'Hello',

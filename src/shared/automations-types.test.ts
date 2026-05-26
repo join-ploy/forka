@@ -43,8 +43,13 @@ describe('chain types', () => {
 
   it('RunPromptConfig matches the design doc shape', () => {
     expectTypeOf<RunPromptConfig['worktreeRef']>().toEqualTypeOf<string>()
+    expectTypeOf<RunPromptConfig['source']>().toEqualTypeOf<
+      'custom' | 'review' | 'create-pr' | undefined
+    >()
     expectTypeOf<RunPromptConfig['agentId']>().toEqualTypeOf<TuiAgent>()
+    expectTypeOf<RunPromptConfig['commandId']>().toEqualTypeOf<string | undefined>()
     expectTypeOf<RunPromptConfig['prompt']>().toEqualTypeOf<string>()
+    expectTypeOf<RunPromptConfig['promptOverride']>().toEqualTypeOf<string | undefined>()
     expectTypeOf<RunPromptConfig['doneDebounceSeconds']>().toEqualTypeOf<number>()
   })
 
@@ -157,6 +162,10 @@ describe('manual payload types', () => {
 
   it('RunPromptConfig gains optional paneRef', () => {
     expectTypeOf<RunPromptConfig['paneRef']>().toEqualTypeOf<string | undefined>()
+  })
+
+  it('RunPromptConfig supports skipping clean main targets', () => {
+    expectTypeOf<RunPromptConfig['skipIfNoChangesFromMain']>().toEqualTypeOf<boolean | undefined>()
   })
 
   it('LinearIssuePayload has the documented fields', () => {

@@ -1,11 +1,13 @@
 import type { StepRunner, StepRunnerCtx, StepRunnerResult } from '../step-runner'
 import type { RunPromptConfig } from '../../../shared/automations-types'
+import type { TuiAgent } from '../../../shared/types'
 import { parseMemberScopedRef } from '../../../shared/automation-member-scoped-ref'
 import type { AgentStatusEntry } from '../../agent-status/registry'
 import { OpenPromptPaneError } from '../open-prompt-pane'
 import { SendPromptToPaneError } from '../send-prompt-to-pane'
 import { resolveTemplate, TemplateResolutionError } from '../template'
 import { OutputTail } from '../output-tail'
+import type { PromptMainChangeResult, PromptMainChangeTarget } from '../prompt-target-main-changes'
 
 /** Cap PTY output capture at 32 KiB. Same sizing as run-command — big
  *  enough to read the agent's last reply for downstream templating, small
@@ -14,6 +16,7 @@ const OUTPUT_TAIL_MAX_BYTES = 32 * 1024
 
 export type RunPromptDeps = {
   openPromptPane: (params: {
+    dedupeKey?: string
     worktreeId: string
     agentId: string
     prompt: string
@@ -57,6 +60,17 @@ export type RunPromptDeps = {
      *  member is representative. */
     connectionId: string | null
   } | null
+  /** Resolves a group id to every member worktree. Used only by the clean
+   *  target skip gate; launch behavior still uses getGroupSummary above. */
+  getGroupMemberWorktreeIds?: (groupId: string) => string[] | null
+  hasChangesFromMain?: (targets: PromptMainChangeTarget[]) => Promise<PromptMainChangeResult>
+  resolvePresetPrompt?: (params: {
+    source: 'review' | 'create-pr'
+    commandId?: string
+    promptOverride?: string
+    fallbackAgentId: TuiAgent
+    worktreeId: string
+  }) => Promise<{ agentId: TuiAgent; prompt: string }>
   /** Resolve a paneKey to its current ptyId so the runner can subscribe to
    *  the pane's data stream and capture the agent's last-turn output for
    *  step output. Returns undefined if the pane has no live PTY (pane gone,
@@ -68,6 +82,16 @@ export type RunPromptDeps = {
   subscribePtyData?: (listener: (ptyId: string, data: string) => void) => () => void
   now: () => number
 }
+
+type PromptTargetResolution =
+  | {
+      ok: true
+      effectiveWorktreeId: string
+      effectiveSummary: { path: string; connectionId: string | null } | null
+      memberScoped: boolean
+      changeTargets: PromptMainChangeTarget[]
+    }
+  | { ok: false; error: string }
 
 type Tracker = {
   paneKey: string
@@ -115,6 +139,76 @@ export class RunPromptRunner implements StepRunner {
 
   constructor(private readonly deps: RunPromptDeps) {}
 
+  private resolvePromptTarget(
+    worktreeId: string,
+    includeChangeTargets: boolean
+  ): PromptTargetResolution {
+    let effectiveWorktreeId = worktreeId
+    let effectiveSummary: { path: string; connectionId: string | null } | null = null
+    let memberScoped = false
+    let changeWorktreeIds = [worktreeId]
+
+    const parsedMemberScoped = parseMemberScopedRef(worktreeId)
+    if (parsedMemberScoped) {
+      const memberSummary = this.deps.getWorktreeSummary?.(parsedMemberScoped.worktreeId) ?? null
+      if (!memberSummary) {
+        return {
+          ok: false,
+          error: `Member worktree not found for worktreeRef "${worktreeId}".`
+        }
+      }
+      effectiveWorktreeId = parsedMemberScoped.worktreeId
+      effectiveSummary = memberSummary
+      memberScoped = true
+      changeWorktreeIds = [parsedMemberScoped.worktreeId]
+    } else if (worktreeId.startsWith('group:')) {
+      const groupSummary = this.deps.getGroupSummary?.(worktreeId) ?? null
+      if (!groupSummary) {
+        return {
+          ok: false,
+          error: `Group not found for worktreeRef "${worktreeId}".`
+        }
+      }
+      effectiveWorktreeId = groupSummary.firstMemberWorktreeId
+      effectiveSummary = {
+        path: groupSummary.parentPath,
+        connectionId: groupSummary.connectionId
+      }
+      // Why: a group-scoped prompt is skipped only when every member has no
+      // changes, even though the launched pane itself binds to the first member.
+      changeWorktreeIds = this.deps.getGroupMemberWorktreeIds?.(worktreeId) ?? [
+        groupSummary.firstMemberWorktreeId
+      ]
+    } else {
+      // Why: pre-resolve path + connectionId in main and hand them to the
+      // renderer so it doesn't have to look the worktree up in its cache.
+      effectiveSummary = this.deps.getWorktreeSummary?.(worktreeId) ?? null
+    }
+
+    const changeTargets: PromptMainChangeTarget[] = []
+    if (includeChangeTargets) {
+      for (const id of changeWorktreeIds) {
+        const summary = this.deps.getWorktreeSummary?.(id) ?? null
+        if (summary) {
+          changeTargets.push({
+            worktreeId: id,
+            path: summary.path,
+            connectionId: summary.connectionId
+          })
+        }
+      }
+      if (changeTargets.length === 0 && effectiveSummary) {
+        changeTargets.push({
+          worktreeId: effectiveWorktreeId,
+          path: effectiveSummary.path,
+          connectionId: effectiveSummary.connectionId
+        })
+      }
+    }
+
+    return { ok: true, effectiveWorktreeId, effectiveSummary, memberScoped, changeTargets }
+  }
+
   async tick(ctx: StepRunnerCtx): Promise<StepRunnerResult> {
     const config = ctx.step.config as RunPromptConfig
     let runTrackers = this.trackers.get(ctx.runId)
@@ -122,10 +216,10 @@ export class RunPromptRunner implements StepRunner {
     if (!tracker) {
       let worktreeId: string
       let prompt: string
+      let agentId: TuiAgent
       let resolvedPaneRef: string
       try {
         worktreeId = resolveTemplate(config.worktreeRef, ctx.context)
-        prompt = resolveTemplate(config.prompt, ctx.context)
         // Why: paneRef is optional; only resolve when present so a chain
         // without it doesn't fail on a missing template input.
         resolvedPaneRef = config.paneRef ? resolveTemplate(config.paneRef, ctx.context) : ''
@@ -133,6 +227,56 @@ export class RunPromptRunner implements StepRunner {
         // Template resolution errors can never succeed on retry (bad authoring
         // or missing context), so fail-fast instead of looping forever.
         if (e instanceof TemplateResolutionError) {
+          return { outcome: 'failed', status: 'failed', error: e.message }
+        }
+        throw e
+      }
+
+      const shouldCheckChanges =
+        config.skipIfNoChangesFromMain === true && !!this.deps.hasChangesFromMain
+      const target = this.resolvePromptTarget(worktreeId, shouldCheckChanges)
+      if (!target.ok) {
+        return { outcome: 'failed', status: 'failed', error: target.error }
+      }
+
+      if (shouldCheckChanges && target.changeTargets.length > 0 && this.deps.hasChangesFromMain) {
+        const changes = await this.deps.hasChangesFromMain(target.changeTargets)
+        if (!changes.hasChanges) {
+          return {
+            outcome: 'done',
+            status: 'skipped',
+            output: {
+              reason: 'No changes from main',
+              checkedWorktreeIds: changes.checkedWorktreeIds
+            }
+          }
+        }
+      }
+
+      const source = config.source ?? 'custom'
+      try {
+        if (source === 'custom') {
+          prompt = resolveTemplate(config.prompt, ctx.context)
+          agentId = config.agentId
+        } else {
+          if (!this.deps.resolvePresetPrompt) {
+            throw new Error('RunPromptRunner: resolvePresetPrompt dep not wired.')
+          }
+          const resolved = await this.deps.resolvePresetPrompt({
+            source,
+            commandId: config.commandId,
+            promptOverride: config.promptOverride,
+            fallbackAgentId: config.agentId,
+            worktreeId: target.effectiveWorktreeId
+          })
+          prompt = resolveTemplate(resolved.prompt, ctx.context)
+          agentId = resolved.agentId
+        }
+      } catch (e) {
+        if (e instanceof TemplateResolutionError) {
+          return { outcome: 'failed', status: 'failed', error: e.message }
+        }
+        if (e instanceof Error) {
           return { outcome: 'failed', status: 'failed', error: e.message }
         }
         throw e
@@ -183,72 +327,18 @@ export class RunPromptRunner implements StepRunner {
 
       let paneKey: string
       try {
-        // Why (grouped-workspaces L3): when the resolved worktreeRef is a
-        // `group:<uuid>` id (e.g. `{{steps.<create-workspace-group>.groupId}}`),
-        // the agent should run at the group's shared parent folder rather than
-        // any single member's worktree. Redirect both the worktreeId binding
-        // (to the first member, so UI tab/status lookups still find a real
-        // worktree) and the CWD (to parentPath) here. Phase J's pty:spawn
-        // override handles the inverse case — when the ref is a member
-        // worktreeId, it already redirects the CWD to parentPath if the
-        // worktree has groupId set — so we don't need a second branch for
-        // member-targeted runs.
-        //
-        // Ask C (member-scoped): a `member:<groupId>:<worktreeId>` ref means
-        // "run at the member worktree's path, but keep the terminal bound to
-        // the group". We bind the tab to the member worktreeId (the group's
-        // card already owns any tab whose worktreeId is a member), then pass
-        // `memberScoped: true` so the renderer threads `keepCwd: true` and
-        // Phase J1 doesn't bounce the CWD back up to parentPath.
-        let effectiveWorktreeId = worktreeId
-        let effectiveSummary: { path: string; connectionId: string | null } | null = null
-        let memberScoped = false
-        const parsedMemberScoped = parseMemberScopedRef(worktreeId)
-        if (parsedMemberScoped) {
-          // Why: ignore the renderer's possibly-stale cache here too — we
-          // need the member's path to plant the agent there even if the
-          // member was minted milliseconds earlier in the same chain.
-          const memberSummary =
-            this.deps.getWorktreeSummary?.(parsedMemberScoped.worktreeId) ?? null
-          if (!memberSummary) {
-            return {
-              outcome: 'failed',
-              status: 'failed',
-              error: `Member worktree not found for worktreeRef "${worktreeId}".`
-            }
-          }
-          effectiveWorktreeId = parsedMemberScoped.worktreeId
-          effectiveSummary = memberSummary
-          memberScoped = true
-        } else if (worktreeId.startsWith('group:')) {
-          const groupSummary = this.deps.getGroupSummary?.(worktreeId) ?? null
-          if (!groupSummary) {
-            return {
-              outcome: 'failed',
-              status: 'failed',
-              error: `Group not found for worktreeRef "${worktreeId}".`
-            }
-          }
-          effectiveWorktreeId = groupSummary.firstMemberWorktreeId
-          effectiveSummary = {
-            path: groupSummary.parentPath,
-            connectionId: groupSummary.connectionId
-          }
-        } else {
-          // Why: pre-resolve path + connectionId in main and hand them to the
-          // renderer so it doesn't have to look the worktree up in its cache.
-          // The chain creates the worktree milliseconds earlier; the renderer's
-          // `worktrees:changed` broadcast may not have settled yet.
-          effectiveSummary = this.deps.getWorktreeSummary?.(worktreeId) ?? null
-        }
         const result = await this.deps.openPromptPane({
-          worktreeId: effectiveWorktreeId,
-          agentId: config.agentId,
+          dedupeKey: `${ctx.runId}:${ctx.step.id}`,
+          worktreeId: target.effectiveWorktreeId,
+          agentId,
           prompt,
-          ...(effectiveSummary
-            ? { worktreePath: effectiveSummary.path, connectionId: effectiveSummary.connectionId }
+          ...(target.effectiveSummary
+            ? {
+                worktreePath: target.effectiveSummary.path,
+                connectionId: target.effectiveSummary.connectionId
+              }
             : {}),
-          ...(memberScoped ? { memberScoped: true } : {})
+          ...(target.memberScoped ? { memberScoped: true } : {})
         })
         paneKey = result.paneKey
       } catch (e) {

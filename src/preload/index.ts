@@ -2529,6 +2529,7 @@ const api = {
     onOpenPromptPane: (
       callback: (request: {
         requestId: string
+        dedupeKey?: string
         worktreeId: string
         agentId: string
         prompt: string
@@ -2541,6 +2542,7 @@ const api = {
         _event: Electron.IpcRendererEvent,
         request: {
           requestId: string
+          dedupeKey?: string
           worktreeId: string
           agentId: string
           prompt: string
@@ -2594,6 +2596,7 @@ const api = {
     onOpenCommandPane: (
       callback: (request: {
         requestId: string
+        dedupeKey?: string
         worktreeId: string
         worktreePath?: string
         connectionId?: string | null
@@ -2607,6 +2610,7 @@ const api = {
         _event: Electron.IpcRendererEvent,
         request: {
           requestId: string
+          dedupeKey?: string
           worktreeId: string
           worktreePath?: string
           connectionId?: string | null

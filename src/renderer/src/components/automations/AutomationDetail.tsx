@@ -512,6 +512,12 @@ function describeStepConfig(step: Step): string {
     }
     case 'run-prompt': {
       const config = step.config as RunPromptConfig
+      if (config.source === 'review') {
+        return 'Review'
+      }
+      if (config.source === 'create-pr') {
+        return 'Create PR'
+      }
       const agentLabel =
         AGENT_CATALOG.find((agent) => agent.id === config.agentId)?.label ?? config.agentId
       const promptPreview = firstNonEmptyLine(config.prompt)

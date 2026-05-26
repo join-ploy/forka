@@ -31,10 +31,11 @@ describe('automation step schemas', () => {
     })
   })
 
-  it('run-prompt produces paneKey (string) + durationMs (number)', () => {
+  it('run-prompt produces paneKey + durationMs + outputTail', () => {
     expect(RUN_PROMPT_OUTPUT_SCHEMA).toEqual({
       paneKey: 'string',
-      durationMs: 'number'
+      durationMs: 'number',
+      outputTail: 'string'
     })
   })
 

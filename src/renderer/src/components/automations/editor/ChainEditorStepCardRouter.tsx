@@ -61,7 +61,14 @@ export function ChainEditorStepCardRouter(
     case 'wait-for-setup':
       return <WaitForSetupStepCard {...common} onConfigChange={props.onConfigChange} />
     case 'run-prompt':
-      return <RunPromptStepCard {...common} onConfigChange={props.onConfigChange} />
+      return (
+        <RunPromptStepCard
+          {...common}
+          reviewCommands={props.reviewCommands}
+          createPrCommands={props.createPrCommands}
+          onConfigChange={props.onConfigChange}
+        />
+      )
     case 'run-command':
       return (
         <RunCommandStepCard

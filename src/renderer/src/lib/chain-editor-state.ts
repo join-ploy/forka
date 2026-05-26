@@ -242,6 +242,9 @@ export function walkStepConfigStrings(
       if (typeof c.prompt === 'string') {
         visit('prompt', c.prompt)
       }
+      if (typeof c.promptOverride === 'string') {
+        visit('promptOverride', c.promptOverride)
+      }
       if (typeof c.paneRef === 'string') {
         visit('paneRef', c.paneRef)
       }
@@ -320,6 +323,8 @@ function rewriteConfigStrings(
         ...c,
         worktreeRef: typeof c.worktreeRef === 'string' ? transform(c.worktreeRef) : c.worktreeRef,
         prompt: typeof c.prompt === 'string' ? transform(c.prompt) : c.prompt,
+        promptOverride:
+          typeof c.promptOverride === 'string' ? transform(c.promptOverride) : c.promptOverride,
         paneRef: typeof c.paneRef === 'string' ? transform(c.paneRef) : c.paneRef
       }
     }

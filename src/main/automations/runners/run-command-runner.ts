@@ -22,6 +22,7 @@ const OUTPUT_TAIL_MAX_BYTES = 32 * 1024
 
 export type RunCommandDeps = {
   openCommandPane: (params: {
+    dedupeKey?: string
     worktreeId: string
     worktreePath?: string
     connectionId?: string | null
@@ -256,6 +257,7 @@ export class RunCommandRunner implements StepRunner {
       let paneKey: string
       try {
         const result = await this.deps.openCommandPane({
+          dedupeKey: `${ctx.runId}:${ctx.step.id}`,
           worktreeId,
           ...(worktreePath !== undefined ? { worktreePath } : {}),
           ...(connectionId !== undefined ? { connectionId } : {}),

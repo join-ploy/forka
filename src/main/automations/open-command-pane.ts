@@ -1,6 +1,9 @@
 import type { IpcMain, IpcMainEvent, WebContents } from 'electron'
 
 export type OpenCommandPaneRequest = {
+  /** Stable per-run-step key. Lets the renderer collapse duplicate/retried
+   *  open requests for the same automation step into one launched pane. */
+  dedupeKey?: string
   worktreeId: string
   /** Optional CWD override for freshly-created worktrees/groups whose
    *  renderer cache may not know the target path yet. Mirrors openPromptPane. */

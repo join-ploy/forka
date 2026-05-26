@@ -476,8 +476,15 @@ function ChainEditorModalBody(props: ChainEditorModalProps): React.JSX.Element {
                       <ParallelGroupContainer groupId={groupId}>
                         {item.map((step, innerIndex) => {
                           const flatIndex = computeFlatIndex(draft.steps, topIndex, innerIndex)
+                          const singleCard = item.length === 1
                           return (
-                            <div key={step.id} className="relative min-w-[280px] flex-1">
+                            <div
+                              key={step.id}
+                              className={cn(
+                                'relative w-full shrink-0',
+                                singleCard && 'mx-auto max-w-3xl'
+                              )}
+                            >
                               {item.length > 1 && (
                                 <button
                                   type="button"
@@ -769,7 +776,9 @@ function ParallelGroupContainer({
         >
           <GripVertical className="size-4" />
         </button>
-        <div className="flex flex-1 items-stretch gap-2">{children}</div>
+        <div className="mx-auto min-w-0 flex-1 overflow-x-auto pb-2 md:w-[min(100vw-8rem,72rem)] md:max-w-[calc(100vw-8rem)] md:flex-none">
+          <div className="flex w-full items-stretch gap-2">{children}</div>
+        </div>
       </div>
     </div>
   )

@@ -32,7 +32,10 @@ export const WAIT_FOR_SETUP_OUTPUT_SCHEMA: OutputSchema = {
 
 export const RUN_PROMPT_OUTPUT_SCHEMA: OutputSchema = {
   paneKey: 'string',
-  durationMs: 'number'
+  durationMs: 'number',
+  // Same completion surface as run-command: prefer hook-provided assistant
+  // text at runtime, falling back to the captured PTY tail.
+  outputTail: 'string'
 }
 
 export const RUN_COMMAND_OUTPUT_SCHEMA: OutputSchema = {

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import type { CreateWorkspaceGroupConfig, Step } from '../../../../../shared/automations-types'
+import type {
+  CreateWorkspaceGroupConfig,
+  Step,
+  StepOrGroup
+} from '../../../../../shared/automations-types'
 import type { Repo } from '../../../../../shared/types'
 import type { ChainDraft } from '../../../lib/chain-editor-state'
 import {
@@ -20,7 +24,7 @@ function makeRepo(id: string, path: string): Repo {
   }
 }
 
-function makeDraft(steps: Step[]): ChainDraft {
+function makeDraft(steps: StepOrGroup[]): ChainDraft {
   return {
     id: 'auto-1',
     name: 'auto',
@@ -166,6 +170,42 @@ describe('getAvailableVariablesAtStep — group namespace', () => {
     const groupErrs = errs.filter((e) => e.path.startsWith('group.'))
     expect(groupErrs.length).toBeGreaterThan(0)
     expect(groupErrs[0]).toMatchObject({ code: 'unknown-path' })
+  })
+})
+
+describe('computeAllErrors — step ids', () => {
+  it('rejects duplicate ids inside a parallel group', () => {
+    const step: Step = {
+      id: 'review',
+      kind: 'run-prompt',
+      config: {
+        worktreeRef: 'wt-1',
+        agentId: 'claude',
+        prompt: 'Review',
+        doneDebounceSeconds: 5
+      },
+      onFailure: 'halt',
+      timeoutSeconds: null
+    }
+    const draft = makeDraft([
+      [
+        step,
+        {
+          ...step,
+          kind: 'run-command',
+          config: {
+            worktreeRef: 'wt-1',
+            source: 'custom',
+            customCommand: 'echo hi',
+            captureStdout: false
+          }
+        }
+      ]
+    ])
+
+    const errors = computeAllErrors(draft).filter((error) => error.field === 'id')
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toMatch(/used more than once/)
   })
 })
 
