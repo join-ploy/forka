@@ -4,10 +4,12 @@
 # it onto a charcoal rounded-squircle with a drop shadow on a transparent canvas,
 # suitable for macOS/Windows app icons.
 #
-# Requires: brew install librsvg imagemagick libicns
+# Requires: brew install librsvg imagemagick
+# Optional: Xcode (for macOS Tahoe Assets.car via actool)
 # Produces:
 #   resources/build/icon.png   (1024x1024)
-#   resources/build/icon.icns  (macOS)
+#   resources/build/icon.icns  (macOS, legacy)
+#   resources/build/Assets.car (macOS Tahoe+, if Xcode available)
 #   resources/build/icon.ico   (Windows, multi-size)
 #   resources/icon.png         (256x256, tray/dev)
 #   resources/icon-dev.png     (256x256 with "DEV" banner)
@@ -31,7 +33,6 @@ fi
 missing=()
 command -v rsvg-convert &>/dev/null || missing+=(librsvg)
 command -v magick &>/dev/null       || missing+=(imagemagick)
-command -v png2icns &>/dev/null     || missing+=(libicns)
 if [ ${#missing[@]} -gt 0 ]; then
   echo "Error: missing dependencies: ${missing[*]}" >&2
   echo "Install with: brew install ${missing[*]}" >&2
@@ -61,7 +62,7 @@ magick "$TMP_DIR/fill.png" "$TMP_DIR/mask.png" \
   -alpha off -compose CopyOpacity -composite \
   "$TMP_DIR/squircle-raw.png"
 
-# Add drop shadow behind the squircle
+# Center on 1024x1024 canvas with drop shadow
 magick -size 1024x1024 xc:none \
   "$TMP_DIR/squircle-raw.png" -gravity center -geometry +0-6 -composite \
   \( "$TMP_DIR/squircle-raw.png" -gravity center -background none -shadow 50x12+0+10 \) \
@@ -91,15 +92,41 @@ magick "$RESOURCES_DIR/icon.png" \
   "$RESOURCES_DIR/icon-dev.png"
 echo "  -> resources/icon-dev.png (256x256 with DEV banner)"
 
-# --- Step 6: macOS .icns
-png2icns "$BUILD_DIR/icon.icns" "$BUILD_DIR/icon.png"
+# --- Step 6: macOS .icns via iconutil (produces all required sizes)
+ICONSET_DIR="$TMP_DIR/app.iconset"
+mkdir -p "$ICONSET_DIR"
+for size in 16 32 128 256 512; do
+  magick "$BUILD_DIR/icon.png" -resize "${size}x${size}" "$ICONSET_DIR/icon_${size}x${size}.png"
+  double=$((size * 2))
+  magick "$BUILD_DIR/icon.png" -resize "${double}x${double}" "$ICONSET_DIR/icon_${size}x${size}@2x.png"
+done
+iconutil --convert icns --output "$BUILD_DIR/icon.icns" "$ICONSET_DIR"
 echo "  -> resources/build/icon.icns"
 
 # --- Step 7: Windows .ico (multi-size)
 magick "$BUILD_DIR/icon.png" -define icon:auto-resize=256,128,64,48,32,16 "$BUILD_DIR/icon.ico"
 echo "  -> resources/build/icon.ico"
 
-# --- Step 8: Copy source SVG to top-level resources
+# --- Step 8: macOS Tahoe Assets.car (requires Xcode for actool)
+ICON_SOURCE="$SCRIPT_DIR/icon.icon"
+if xcrun actool --version &>/dev/null && [ -d "$ICON_SOURCE" ]; then
+  PLIST_TMP="$TMP_DIR/assetcatalog_generated_info.plist"
+  xcrun actool "$ICON_SOURCE" --compile "$BUILD_DIR" \
+    --output-format human-readable-text --notices --warnings --errors \
+    --output-partial-info-plist "$PLIST_TMP" \
+    --app-icon icon --include-all-app-icons \
+    --enable-on-demand-resources NO \
+    --development-region en \
+    --target-device mac \
+    --minimum-deployment-target 26.0 \
+    --platform macosx
+  rm -f "$PLIST_TMP"
+  echo "  -> resources/build/Assets.car (macOS Tahoe)"
+else
+  echo "  -- skipping Assets.car (Xcode not available)"
+fi
+
+# --- Step 9: Copy source SVG to top-level resources
 cp "$SVG_SOURCE" "$RESOURCES_DIR/logo.svg"
 echo "  -> resources/logo.svg"
 

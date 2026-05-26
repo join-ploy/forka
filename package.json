@@ -44,7 +44,7 @@
     "test:e2e": "npx playwright test --config tests/playwright.config.ts --project electron-headless",
     "test:e2e:headful": "npx playwright test --config tests/playwright.config.ts --project electron-headful",
     "test:e2e:computer": "vitest run --config tests/e2e/vitest.config.ts",
-    "build:unpack:fork": "pnpm build:unpack && codesign --force --deep --sign - --identifier com.stablyai.orca dist/mac-arm64/Orca.app"
+    "build:unpack:fork": "pnpm build:unpack && codesign --force --deep --sign - --identifier com.stablyai.orca dist/mac-arm64/Cohort.app"
   },
   "dependencies": {
     "@dnd-kit/core": "6.3.1",

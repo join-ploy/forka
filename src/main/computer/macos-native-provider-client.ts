@@ -181,7 +181,7 @@ export class MacOSNativeProviderClient {
     this.socketTokenPath = join(this.socketDirectory, 'provider.token')
     writeFileSync(this.socketTokenPath, this.socketToken, { encoding: 'utf8', mode: 0o600 })
     // Why: launching the nested helper via LaunchServices can make TCC evaluate
-    // Orca.app as responsible; the signed helper executable owns this grant.
+    // Cohort.app as responsible; the signed helper executable owns this grant.
     const provider = spawn(
       helperExecutablePath,
       ['--agent', this.socketPath, '--token-file', this.socketTokenPath],

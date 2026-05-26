@@ -114,7 +114,7 @@ function readPermissionStatusFromHelperApp(
     )
   }
   // Why: launching the nested helper via LaunchServices can make TCC evaluate
-  // Orca.app as responsible; the signed helper executable owns this grant.
+  // Cohort.app as responsible; the signed helper executable owns this grant.
   const output = execFileSync(executablePath, ['--permission-status'], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore']
