@@ -215,11 +215,6 @@ if (hasSingleInstanceLock) {
   initStatsPath()
   initClaudeUsagePath()
   initCodexUsagePath()
-  // Why: set the display name after all init*Path calls have captured their
-  // userData-derived paths, but before any TCC-triggering code runs. TCC
-  // captures the app name at the first protected access; leaving this until
-  // whenReady causes dialogs to show "Orca" (the package.json name).
-  app.setName('Cohort')
   enableMainProcessGpuFeatures()
 }
 
@@ -543,6 +538,7 @@ function driveSyntheticTitleFromHook(
 
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.stablyai.orca')
+  app.setName('Cohort')
 
   if (process.platform === 'darwin' && is.dev) {
     const dockIcon = nativeImage.createFromPath(devIcon)

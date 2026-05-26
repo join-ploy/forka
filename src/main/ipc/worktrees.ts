@@ -38,6 +38,7 @@ import { workspaceSourceSchema, type WorkspaceSource } from '../../shared/teleme
 import { classifyWorkspaceCreateError } from './workspace-create-error-classifier'
 import { WORKTREE_ID_SEPARATOR } from '../../shared/worktree-id'
 import { findGroupForWorktree, resolveGroupRepoNames } from '../workspace-group-runtime'
+import { stampCodexProjectTrustForSettings } from '../codex/project-trust'
 
 // Why: worktrees discovered on disk (not created via Orca's UI) have no
 // persisted WorktreeMeta, so mergeWorktree falls back to `lastActivityAt: 0`.
@@ -258,6 +259,14 @@ export function registerWorktreeHandlers(
         from_existing_branch: typeof args.baseBranch === 'string' && args.baseBranch.length > 0,
         ...getCohortAtEmit()
       })
+
+      if (!repo.connectionId) {
+        try {
+          stampCodexProjectTrustForSettings([result.worktree.path], store.getSettings())
+        } catch (error) {
+          console.warn('[worktrees] Failed to stamp Codex project trust:', error)
+        }
+      }
 
       return result
     }

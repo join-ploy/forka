@@ -282,6 +282,107 @@ function isDaemonProcess(
   }
 }
 
+async function terminateDaemonProcess(
+  pid: number,
+  socketPath: string,
+  tokenPath: string,
+  startedAtMs: number | null
+): Promise<boolean> {
+  process.kill(pid, 'SIGTERM')
+  const deadline = Date.now() + KILL_WAIT_MS
+  let exited = false
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0)
+    } catch {
+      exited = true
+      break
+    }
+    await new Promise((resolve) => setTimeout(resolve, KILL_POLL_MS))
+  }
+  if (!exited) {
+    // Why: re-check process identity before SIGKILL. The SIGTERM-then-wait
+    // window is long enough for the pid to be recycled if the original
+    // daemon died during the wait. Without this, we'd SIGKILL an unrelated
+    // process that happens to now own the same pid.
+    if (!isDaemonProcess(pid, socketPath, tokenPath, startedAtMs)) {
+      console.warn('[daemon] Skipping SIGKILL for stale daemon: reason=pid_recycled')
+      return true
+    }
+    try {
+      process.kill(pid, 'SIGKILL')
+      exited = true
+    } catch {
+      // Already dead
+    }
+  }
+  return exited
+}
+
+function findDaemonPidByEndpoint(socketPath: string, tokenPath: string): number | null {
+  if (process.platform === 'win32') {
+    try {
+      const output = execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          [
+            'Get-CimInstance Win32_Process',
+            '| Where-Object { $_.CommandLine -like "*daemon-entry*" }',
+            '| ForEach-Object { "$($_.ProcessId)`t$($_.CommandLine)" }'
+          ].join(' ')
+        ],
+        { encoding: 'utf8', timeout: 3_000 }
+      )
+      for (const line of output.split(/\r?\n/)) {
+        const tabIdx = line.indexOf('\t')
+        if (tabIdx === -1) {
+          continue
+        }
+        const pid = Number(line.slice(0, tabIdx).trim())
+        const commandLine = line.slice(tabIdx + 1)
+        if (
+          Number.isFinite(pid) &&
+          pid !== process.pid &&
+          commandLineMatchesDaemon(commandLine, socketPath, tokenPath)
+        ) {
+          return pid
+        }
+      }
+    } catch {
+      return null
+    }
+    return null
+  }
+
+  try {
+    const output = execFileSync('ps', ['-axo', 'pid=,command='], {
+      encoding: 'utf8',
+      timeout: 3_000
+    })
+    for (const line of output.split('\n')) {
+      const match = line.match(/^\s*(\d+)\s+(.+)$/)
+      if (!match) {
+        continue
+      }
+      const pid = Number(match[1])
+      const commandLine = match[2]
+      if (
+        Number.isFinite(pid) &&
+        pid !== process.pid &&
+        commandLineMatchesDaemon(commandLine, socketPath, tokenPath)
+      ) {
+        return pid
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
 function getDaemonCommandLine(pid: number): string | null {
   if (process.platform === 'win32') {
     try {
@@ -365,41 +466,27 @@ export async function killStaleDaemon(
   try {
     const parsedPid = parseDaemonPidFile(readFileSync(pidPath, 'utf8'))
     if (parsedPid && isDaemonProcess(parsedPid.pid, socketPath, tokenPath, parsedPid.startedAtMs)) {
-      const { pid, startedAtMs } = parsedPid
-      process.kill(pid, 'SIGTERM')
-      const deadline = Date.now() + KILL_WAIT_MS
-      let exited = false
-      while (Date.now() < deadline) {
-        try {
-          process.kill(pid, 0)
-        } catch {
-          exited = true
-          break
-        }
-        await new Promise((resolve) => setTimeout(resolve, KILL_POLL_MS))
-      }
-      if (!exited) {
-        // Why: re-check process identity before SIGKILL. The SIGTERM-then-wait
-        // window is long enough for the pid to be recycled if the original
-        // daemon died during the wait. Without this, we'd SIGKILL an unrelated
-        // process that happens to now own the same pid.
-        if (!isDaemonProcess(pid, socketPath, tokenPath, startedAtMs)) {
-          console.warn('[daemon] Skipping SIGKILL for stale daemon: reason=pid_recycled')
-          exited = true
-          killedDaemon = true
-        } else {
-          try {
-            process.kill(pid, 'SIGKILL')
-            exited = true
-          } catch {
-            // Already dead
-          }
-        }
-      }
+      const exited = await terminateDaemonProcess(
+        parsedPid.pid,
+        socketPath,
+        tokenPath,
+        parsedPid.startedAtMs
+      )
       killedDaemon = killedDaemon || exited
     }
   } catch {
     // PID file missing or process already dead
+  }
+
+  if (!killedDaemon) {
+    const endpointPid = findDaemonPidByEndpoint(socketPath, tokenPath)
+    if (endpointPid !== null) {
+      // Why: a display-name/userData migration can leave a live daemon socket
+      // with a token file that no longer authenticates and no usable pid file.
+      // Match the exact daemon-entry socket/token args before killing; never
+      // touch terminal-history here so cold restore can still replay scrollback.
+      killedDaemon = await terminateDaemonProcess(endpointPid, socketPath, tokenPath, null)
+    }
   }
 
   try {

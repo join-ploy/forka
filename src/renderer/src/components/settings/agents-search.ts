@@ -34,6 +34,10 @@ export const AGENTS_PANE_SEARCH_ENTRIES: SettingsSearchEntry[] = [
       'github copilot',
       'command',
       'override',
+      'trust',
+      'trusted',
+      'workspace',
+      'worktree',
       'install',
       'detected'
     ]

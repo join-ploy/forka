@@ -254,6 +254,7 @@ export function AgentsPane({ settings, updateSettings }: AgentsPaneProps): React
     updateSettings({ agentCmdOverrides: next })
   }
 
+  const codexTrustCreatedWorkspaces = settings.codexTrustCreatedWorkspaces
   const detectedAgents = AGENT_CATALOG.filter((a) => detectedIds === null || detectedIds.has(a.id))
   const undetectedAgents = AGENT_CATALOG.filter(
     (a) => detectedIds !== null && !detectedIds.has(a.id)
@@ -333,6 +334,43 @@ export function AgentsPane({ settings, updateSettings }: AgentsPaneProps): React
               </button>
             )
           })}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold">Codex</h3>
+          <p className="text-xs text-muted-foreground">Project trust for automated runs.</p>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
+          <div className="space-y-0.5">
+            <div className="text-sm font-medium">Trust new workspaces</div>
+            <p className="text-xs text-muted-foreground">
+              Add newly created worktree and group paths to Codex project trust.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={codexTrustCreatedWorkspaces}
+            onClick={() =>
+              updateSettings({
+                codexTrustCreatedWorkspaces: !codexTrustCreatedWorkspaces
+              })
+            }
+            className={cn(
+              'relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border border-transparent transition-colors',
+              codexTrustCreatedWorkspaces ? 'bg-foreground' : 'bg-muted-foreground/30'
+            )}
+          >
+            <span
+              className={cn(
+                'pointer-events-none block size-3.5 rounded-full bg-background shadow-sm transition-transform',
+                codexTrustCreatedWorkspaces ? 'translate-x-4' : 'translate-x-0.5'
+              )}
+            />
+          </button>
         </div>
       </section>
 

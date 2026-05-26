@@ -95,6 +95,10 @@ export function configureDevUserDataPath(isDev: boolean): void {
   }
 
   if (!isDev) {
+    // Why: app.setName('Cohort') is a display-name change only. Pin the
+    // storage root to lower-case `cohort` before that call so persistence,
+    // daemon sockets, and terminal history never resolve different paths.
+    app.setPath('userData', join(app.getPath('appData'), 'cohort'))
     return
   }
   const overrideUserDataPath = process.env.ORCA_DEV_USER_DATA_PATH

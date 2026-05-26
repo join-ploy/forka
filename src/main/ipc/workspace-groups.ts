@@ -22,6 +22,7 @@ import {
   createRemoteWorktree,
   notifyWorktreesChanged
 } from './worktree-remote'
+import { stampCodexProjectTrustForSettings } from '../codex/project-trust'
 
 // Why: repo folders are derived from the on-disk basename (stripped of the
 // `.git` suffix bare repos carry) so member layouts match the convention
@@ -248,6 +249,17 @@ export async function createWorkspaceGroup(
   // forward — see WorktreeMeta.groupId.
   for (const worktree of memberWorktrees) {
     store.setWorktreeMeta(worktree.id, { groupId })
+  }
+
+  if (firstConnectionId === null) {
+    try {
+      stampCodexProjectTrustForSettings(
+        [parentPath, ...memberWorktrees.map((worktree) => worktree.path)],
+        store.getSettings()
+      )
+    } catch (error) {
+      console.warn('[workspace-groups] Failed to stamp Codex project trust:', error)
+    }
   }
 
   // Why: broadcast AFTER both the group record and the per-member groupId

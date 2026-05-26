@@ -1393,6 +1393,10 @@ export type GlobalSettings = {
    *  and external terminal sessions. */
   codexManagedAccounts: CodexManagedAccount[]
   activeCodexManagedAccountId: string | null
+  /** Why: Codex trust is per literal project path, so newly-created
+   *  worktrees/groups need explicit entries when the user opts into
+   *  unattended agent runs. */
+  codexTrustCreatedWorkspaces: boolean
   /** Why: Claude Code keeps conversations under one shared config root. Orca
    *  persists only per-account auth material here so switching accounts does
    *  not fork prior chat/session context the way CLAUDE_CONFIG_DIR swapping would. */
