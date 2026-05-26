@@ -303,6 +303,59 @@ function rewriteConfigStrings(
   }
 }
 
+/**
+ * Wraps the step at `index` into a parallel group with `newStep`, or appends
+ * `newStep` to the group if the slot is already a parallel group.
+ */
+export function groupStepAt(steps: StepOrGroup[], index: number, newStep: Step): StepOrGroup[] {
+  const next = steps.slice()
+  const existing = next[index]
+  next[index] = Array.isArray(existing) ? [...existing, newStep] : [existing, newStep]
+  return next
+}
+
+/**
+ * Removes the step at `innerIndex` from the parallel group at `groupIndex`.
+ * Auto-unwraps the group to a solo step when only one sibling remains.
+ * No-op when the target slot is not a group.
+ */
+export function ungroupStep(
+  steps: StepOrGroup[],
+  groupIndex: number,
+  innerIndex: number
+): StepOrGroup[] {
+  const next = steps.slice()
+  const group = next[groupIndex]
+  if (!Array.isArray(group)) {
+    return next
+  }
+  const remaining = group.filter((_, i) => i !== innerIndex)
+  next[groupIndex] = remaining.length <= 1 ? remaining[0] : remaining
+  return next
+}
+
+/**
+ * Moves a step within a parallel group from `fromInner` to `toInner`.
+ * No-op when the target slot is not a group.
+ */
+export function reorderWithinGroup(
+  steps: StepOrGroup[],
+  groupIndex: number,
+  fromInner: number,
+  toInner: number
+): StepOrGroup[] {
+  const next = steps.slice()
+  const group = next[groupIndex]
+  if (!Array.isArray(group)) {
+    return next
+  }
+  const children = group.slice()
+  const [moved] = children.splice(fromInner, 1)
+  children.splice(toInner, 0, moved)
+  next[groupIndex] = children
+  return next
+}
+
 export function flattenSteps(steps: StepOrGroup[]): Step[] {
   const result: Step[] = []
   for (const item of steps) {
