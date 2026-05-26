@@ -1,5 +1,6 @@
 import type {
   Step,
+  StepOrGroup,
   StepKind,
   StepConfig,
   TriggerConfig,
@@ -23,7 +24,7 @@ export type ChainDraft = {
   projectId: string
   trigger: TriggerConfig
   enabled: boolean
-  steps: Step[]
+  steps: StepOrGroup[]
   autoTriggers: AutoTrigger[]
 }
 
@@ -53,10 +54,10 @@ export function isValidStepId(id: string): boolean {
  * Scans only ids that match the exact pattern so renamed/custom ids do not
  * cause collisions.
  */
-export function generateDefaultStepId(kind: StepKind, steps: Step[]): string {
+export function generateDefaultStepId(kind: StepKind, steps: StepOrGroup[]): string {
   const counterRegex = new RegExp(`^${escapeRegex(kind)}-(\\d+)$`)
   let max = 0
-  for (const step of steps) {
+  for (const step of flattenSteps(steps)) {
     const match = counterRegex.exec(step.id)
     if (!match) {
       continue
@@ -74,14 +75,18 @@ export function generateDefaultStepId(kind: StepKind, steps: Step[]): string {
  * remaining steps' template-string fields. Throws if the new id is invalid or
  * collides with another step's id. Returns a new array (steps are not mutated).
  */
-export function renameStepWithRewrites(steps: Step[], oldId: string, newId: string): Step[] {
+export function renameStepWithRewrites(
+  steps: StepOrGroup[],
+  oldId: string,
+  newId: string
+): StepOrGroup[] {
   if (!isValidStepId(newId)) {
     throw new Error(`Step id '${newId}' is invalid; must be kebab-case (lowercase + digits + '-').`)
   }
   if (oldId === newId) {
     return steps.slice()
   }
-  for (const step of steps) {
+  for (const step of flattenSteps(steps)) {
     if (step.id !== oldId && step.id === newId) {
       throw new Error(`Step id '${newId}' is already in use.`)
     }
@@ -92,12 +97,19 @@ export function renameStepWithRewrites(steps: Step[], oldId: string, newId: stri
   const refPattern = new RegExp(`\\{\\{steps\\.${escapeRegex(oldId)}\\.`, 'g')
   const replacement = `{{steps.${newId}.`
 
-  return steps.map((step) => {
+  const rewriteStep = (step: Step): Step => {
     const nextId = step.id === oldId ? newId : step.id
     const nextConfig = rewriteConfigStrings(step.config, step.kind, (value) =>
       value.replace(refPattern, replacement)
     )
     return { ...step, id: nextId, config: nextConfig }
+  }
+
+  return steps.map((item) => {
+    if (Array.isArray(item)) {
+      return item.map(rewriteStep)
+    }
+    return rewriteStep(item)
   })
 }
 
@@ -105,7 +117,11 @@ export function renameStepWithRewrites(steps: Step[], oldId: string, newId: stri
  * Returns a new array with the step at `fromIndex` moved to `toIndex`. Pure
  * splice — does not mutate the input array.
  */
-export function reorderSteps(steps: Step[], fromIndex: number, toIndex: number): Step[] {
+export function reorderSteps(
+  steps: StepOrGroup[],
+  fromIndex: number,
+  toIndex: number
+): StepOrGroup[] {
   const next = steps.slice()
   const [moved] = next.splice(fromIndex, 1)
   next.splice(toIndex, 0, moved)
@@ -117,14 +133,30 @@ export function reorderSteps(steps: Step[], fromIndex: number, toIndex: number):
  * chain. A chain with future references cannot execute correctly because the
  * referenced step has not yet produced output when the referring step runs.
  */
-export function detectFutureReferences(steps: Step[]): FutureReferenceViolation[] {
+export function detectFutureReferences(steps: StepOrGroup[]): FutureReferenceViolation[] {
   const violations: FutureReferenceViolation[] = []
   const indexById = new Map<string, number>()
-  steps.forEach((step, i) => indexById.set(step.id, i))
+  // Group members share the group's top-level position so they're "concurrent".
+  const groupById = new Map<string, Set<string>>()
+
+  steps.forEach((item, i) => {
+    if (Array.isArray(item)) {
+      const siblingIds = new Set(item.map((s) => s.id))
+      for (const s of item) {
+        indexById.set(s.id, i)
+        groupById.set(s.id, siblingIds)
+      }
+    } else {
+      indexById.set(item.id, i)
+    }
+  })
 
   const refRegexSource = /\{\{steps\.([a-z0-9][a-z0-9-]*)\.[^}]+\}\}/.source
+  const flat = flattenSteps(steps)
 
-  steps.forEach((step, i) => {
+  flat.forEach((step) => {
+    const myPos = indexById.get(step.id)!
+    const mySiblings = groupById.get(step.id)
     walkStepConfigStrings(step.config, step.kind, (field, value) => {
       if (!value) {
         return
@@ -134,8 +166,17 @@ export function detectFutureReferences(steps: Step[]): FutureReferenceViolation[
       let match: RegExpExecArray | null
       while ((match = re.exec(value)) !== null) {
         const toStepId = match[1]
-        const toIdx = indexById.get(toStepId)
-        if (toIdx !== undefined && toIdx > i) {
+        const toPos = indexById.get(toStepId)
+        if (toPos === undefined) {
+          continue
+        }
+        // Future reference: target is at a later top-level position.
+        if (toPos > myPos) {
+          violations.push({ fromStepId: step.id, toStepId, atField: field })
+        }
+        // Sibling reference within same parallel group: also a violation
+        // because siblings run concurrently and outputs are unavailable.
+        else if (toPos === myPos && mySiblings?.has(toStepId) && toStepId !== step.id) {
           violations.push({ fromStepId: step.id, toStepId, atField: field })
         }
       }
@@ -200,6 +241,9 @@ export function walkStepConfigStrings(
       }
       if (typeof c.prompt === 'string') {
         visit('prompt', c.prompt)
+      }
+      if (typeof c.paneRef === 'string') {
+        visit('paneRef', c.paneRef)
       }
       break
     }
@@ -275,7 +319,8 @@ function rewriteConfigStrings(
       return {
         ...c,
         worktreeRef: typeof c.worktreeRef === 'string' ? transform(c.worktreeRef) : c.worktreeRef,
-        prompt: typeof c.prompt === 'string' ? transform(c.prompt) : c.prompt
+        prompt: typeof c.prompt === 'string' ? transform(c.prompt) : c.prompt,
+        paneRef: typeof c.paneRef === 'string' ? transform(c.paneRef) : c.paneRef
       }
     }
     case 'run-command': {
@@ -302,6 +347,73 @@ function rewriteConfigStrings(
   }
 }
 
+/**
+ * Wraps the step at `index` into a parallel group with `newStep`, or appends
+ * `newStep` to the group if the slot is already a parallel group.
+ */
+export function groupStepAt(steps: StepOrGroup[], index: number, newStep: Step): StepOrGroup[] {
+  const next = steps.slice()
+  const existing = next[index]
+  next[index] = Array.isArray(existing) ? [...existing, newStep] : [existing, newStep]
+  return next
+}
+
+/**
+ * Removes the step at `innerIndex` from the parallel group at `groupIndex`.
+ * Auto-unwraps the group to a solo step when only one sibling remains.
+ * No-op when the target slot is not a group.
+ */
+export function ungroupStep(
+  steps: StepOrGroup[],
+  groupIndex: number,
+  innerIndex: number
+): StepOrGroup[] {
+  const next = steps.slice()
+  const group = next[groupIndex]
+  if (!Array.isArray(group)) {
+    return next
+  }
+  const remaining = group.filter((_, i) => i !== innerIndex)
+  next[groupIndex] = remaining.length <= 1 ? remaining[0] : remaining
+  return next
+}
+
+/**
+ * Moves a step within a parallel group from `fromInner` to `toInner`.
+ * No-op when the target slot is not a group.
+ */
+export function reorderWithinGroup(
+  steps: StepOrGroup[],
+  groupIndex: number,
+  fromInner: number,
+  toInner: number
+): StepOrGroup[] {
+  const next = steps.slice()
+  const group = next[groupIndex]
+  if (!Array.isArray(group)) {
+    return next
+  }
+  const children = group.slice()
+  const [moved] = children.splice(fromInner, 1)
+  children.splice(toInner, 0, moved)
+  next[groupIndex] = children
+  return next
+}
+
+export function flattenSteps(steps: StepOrGroup[]): Step[] {
+  const result: Step[] = []
+  for (const item of steps) {
+    if (Array.isArray(item)) {
+      result.push(...item)
+    } else {
+      result.push(item)
+    }
+  }
+  return result
+}
+
 function escapeRegex(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
+
+export type { Step, StepConfig, StepKind, StepOrGroup }

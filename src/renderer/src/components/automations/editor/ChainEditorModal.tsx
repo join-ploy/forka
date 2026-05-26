@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Plus, Play, X } from 'lucide-react'
+import { Plus, Play, X, GripVertical, ArrowUpFromLine } from 'lucide-react'
 import {
   DndContext,
   KeyboardSensor,
@@ -11,8 +11,10 @@ import {
 import {
   SortableContext,
   sortableKeyboardCoordinates,
+  useSortable,
   verticalListSortingStrategy
 } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useAppStore } from '@/store'
@@ -31,15 +33,19 @@ import type {
   Step,
   StepConfig,
   StepKind,
+  StepOrGroup,
   TriggerConfig,
   TriggerSourceId
 } from '../../../../../shared/automations-types'
 import type { Repo, SidebarPromptCommand } from '../../../../../shared/types'
 import {
   type ChainDraft,
+  flattenSteps,
   generateDefaultStepId,
+  groupStepAt,
   renameStepWithRewrites,
-  reorderSteps
+  reorderSteps,
+  ungroupStep
 } from '../../../lib/chain-editor-state'
 import {
   chainHasStep,
@@ -122,28 +128,28 @@ function ChainEditorModalBody(props: ChainEditorModalProps): React.JSX.Element {
     setDirty(true)
   }, [])
 
-  const updateStep = React.useCallback((index: number, patch: Partial<Step>) => {
+  const updateStep = React.useCallback((stepId: string, patch: Partial<Step>) => {
     setDraft((current) => {
-      const nextSteps = current.steps.slice()
-      nextSteps[index] = { ...nextSteps[index], ...patch }
+      const nextSteps = current.steps.map((item) => {
+        if (Array.isArray(item)) {
+          return item.map((s) => (s.id === stepId ? { ...s, ...patch } : s))
+        }
+        return item.id === stepId ? { ...item, ...patch } : item
+      })
       return { ...current, steps: nextSteps }
     })
     setDirty(true)
   }, [])
 
   const updateStepConfig = React.useCallback(
-    (index: number, config: StepConfig) => {
-      updateStep(index, { config })
+    (stepId: string, config: StepConfig) => {
+      updateStep(stepId, { config })
     },
     [updateStep]
   )
 
-  const renameStep = React.useCallback((index: number, newId: string) => {
+  const renameStep = React.useCallback((oldId: string, newId: string) => {
     setDraft((current) => {
-      const oldId = current.steps[index]?.id
-      if (!oldId) {
-        return current
-      }
       try {
         const nextSteps = renameStepWithRewrites(current.steps, oldId, newId)
         return { ...current, steps: nextSteps }
@@ -157,11 +163,26 @@ function ChainEditorModalBody(props: ChainEditorModalProps): React.JSX.Element {
     setDirty(true)
   }, [])
 
-  const deleteStep = React.useCallback((index: number) => {
-    setDraft((current) => ({
-      ...current,
-      steps: current.steps.filter((_, i) => i !== index)
-    }))
+  const deleteStep = React.useCallback((stepId: string) => {
+    setDraft((current) => {
+      const nextSteps: StepOrGroup[] = []
+      for (const item of current.steps) {
+        if (Array.isArray(item)) {
+          const remaining = item.filter((s) => s.id !== stepId)
+          if (remaining.length === 0) {
+            continue
+          }
+          if (remaining.length === 1) {
+            nextSteps.push(remaining[0])
+          } else {
+            nextSteps.push(remaining)
+          }
+        } else if (item.id !== stepId) {
+          nextSteps.push(item)
+        }
+      }
+      return { ...current, steps: nextSteps }
+    })
     setDirty(true)
   }, [])
 
@@ -216,6 +237,51 @@ function ChainEditorModalBody(props: ChainEditorModalProps): React.JSX.Element {
     setAddOpen(false)
   }, [])
 
+  const [parallelAddOpen, setParallelAddOpen] = React.useState<number | null>(null)
+
+  const addParallelStep = React.useCallback((topIndex: number, kind: StepKind) => {
+    setDraft((current) => {
+      const config = defaultConfigForKind(kind)
+      if ('worktreeRef' in config && (config as { worktreeRef: string }).worktreeRef === '') {
+        const ref = pickDefaultWorktreeRef(current.steps)
+        if (ref) {
+          ;(config as { worktreeRef: string }).worktreeRef = ref
+        }
+      }
+      const newStep: Step = {
+        id: generateDefaultStepId(kind, current.steps),
+        kind,
+        config,
+        onFailure: 'halt',
+        timeoutSeconds: null
+      }
+      return { ...current, steps: groupStepAt(current.steps, topIndex, newStep) }
+    })
+    setDirty(true)
+    setParallelAddOpen(null)
+  }, [])
+
+  // Why: extracts a step from a parallel group and inserts it right after
+  // the group's top-level position. If only one sibling remains,
+  // ungroupStep auto-unwraps the group to a solo step.
+  const extractFromGroup = React.useCallback((groupIndex: number, innerIndex: number) => {
+    setDraft((current) => {
+      const group = current.steps[groupIndex]
+      if (!Array.isArray(group)) {
+        return current
+      }
+      const step = group[innerIndex]
+      if (!step) {
+        return current
+      }
+      const afterUngroup = ungroupStep(current.steps, groupIndex, innerIndex)
+      const insertAt = groupIndex + 1
+      const nextSteps = [...afterUngroup.slice(0, insertAt), step, ...afterUngroup.slice(insertAt)]
+      return { ...current, steps: nextSteps }
+    })
+    setDirty(true)
+  }, [])
+
   const handleCancel = React.useCallback(() => {
     if (dirty && !confirm('Discard changes?')) {
       return
@@ -263,7 +329,7 @@ function ChainEditorModalBody(props: ChainEditorModalProps): React.JSX.Element {
   }, [draft, errors.length, dirty, saving, props])
 
   const availableAtEnd = React.useMemo(
-    () => getAvailableVariablesAtStep(draft, draft.steps.length, props.repos),
+    () => getAvailableVariablesAtStep(draft, flattenSteps(draft.steps).length, props.repos),
     [draft, props.repos]
   )
 
@@ -278,7 +344,13 @@ function ChainEditorModalBody(props: ChainEditorModalProps): React.JSX.Element {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
-  const stepIds = React.useMemo(() => draft.steps.map((s) => s.id), [draft.steps])
+  const topLevelIds = React.useMemo(
+    () =>
+      draft.steps.map((item) =>
+        Array.isArray(item) ? `group-${item.map((s) => s.id).join('+')}` : item.id
+      ),
+    [draft.steps]
+  )
 
   const handleDragEnd = React.useCallback(
     (event: DragEndEvent) => {
@@ -286,14 +358,14 @@ function ChainEditorModalBody(props: ChainEditorModalProps): React.JSX.Element {
       if (!over || active.id === over.id) {
         return
       }
-      const fromIndex = draft.steps.findIndex((s) => s.id === active.id)
-      const toIndex = draft.steps.findIndex((s) => s.id === over.id)
+      const fromIndex = topLevelIds.indexOf(String(active.id))
+      const toIndex = topLevelIds.indexOf(String(over.id))
       if (fromIndex === -1 || toIndex === -1) {
         return
       }
       moveStep(fromIndex, toIndex)
     },
-    [draft.steps, moveStep]
+    [topLevelIds, moveStep]
   )
 
   const canSave = errors.length === 0 && dirty && !saving
@@ -376,23 +448,95 @@ function ChainEditorModalBody(props: ChainEditorModalProps): React.JSX.Element {
               DndContext.autoScroll discovers automatically and scrolls while
               the user drags near its edges. */}
           <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-            <SortableContext items={stepIds} strategy={verticalListSortingStrategy}>
-              {draft.steps.map((step, index) => (
-                <ChainEditorStepCardRouter
-                  key={step.id}
-                  step={step}
-                  index={index}
-                  available={getAvailableVariablesAtStep(draft, index, props.repos)}
-                  repos={props.repos}
-                  reviewCommands={props.reviewCommands}
-                  createPrCommands={props.createPrCommands}
-                  onIdChange={(newId) => renameStep(index, newId)}
-                  onConfigChange={(config) => updateStepConfig(index, config)}
-                  onOnFailureChange={(val) => updateStep(index, { onFailure: val })}
-                  onTimeoutChange={(val) => updateStep(index, { timeoutSeconds: val })}
-                  onDelete={() => deleteStep(index)}
-                />
-              ))}
+            <SortableContext items={topLevelIds} strategy={verticalListSortingStrategy}>
+              {draft.steps.map((item, topIndex) => {
+                if (Array.isArray(item)) {
+                  const groupId = `group-${item.map((s) => s.id).join('+')}`
+                  return (
+                    <div key={groupId}>
+                      {topIndex > 0 && <StepConnector />}
+                      <ParallelGroupContainer groupId={groupId}>
+                        {item.map((step, innerIndex) => {
+                          const flatIndex = computeFlatIndex(draft.steps, topIndex, innerIndex)
+                          return (
+                            <div key={step.id} className="relative min-w-[280px] flex-1">
+                              {item.length > 1 && (
+                                <button
+                                  type="button"
+                                  aria-label="Move out of parallel group"
+                                  onClick={() => extractFromGroup(topIndex, innerIndex)}
+                                  className="absolute -top-2 right-2 z-10 rounded-full border border-border bg-background p-0.5 text-muted-foreground shadow-xs hover:bg-accent hover:text-foreground"
+                                >
+                                  <ArrowUpFromLine className="size-3" />
+                                </button>
+                              )}
+                              <ChainEditorStepCardRouter
+                                step={step}
+                                index={flatIndex}
+                                disableDrag
+                                available={getAvailableVariablesAtStep(
+                                  draft,
+                                  flatIndex,
+                                  props.repos
+                                )}
+                                repos={props.repos}
+                                reviewCommands={props.reviewCommands}
+                                createPrCommands={props.createPrCommands}
+                                onIdChange={(newId) => renameStep(step.id, newId)}
+                                onConfigChange={(config) => updateStepConfig(step.id, config)}
+                                onOnFailureChange={(val) => updateStep(step.id, { onFailure: val })}
+                                onTimeoutChange={(val) =>
+                                  updateStep(step.id, { timeoutSeconds: val })
+                                }
+                                onDelete={() => deleteStep(step.id)}
+                              />
+                            </div>
+                          )
+                        })}
+                        <AddParallelButton
+                          open={parallelAddOpen === topIndex}
+                          kinds={availableStepKinds}
+                          onToggle={() =>
+                            setParallelAddOpen(parallelAddOpen === topIndex ? null : topIndex)
+                          }
+                          onPick={(kind) => addParallelStep(topIndex, kind)}
+                        />
+                      </ParallelGroupContainer>
+                    </div>
+                  )
+                }
+                const flatIndex = computeFlatIndex(draft.steps, topIndex, 0)
+                return (
+                  <div key={item.id}>
+                    {topIndex > 0 && <StepConnector />}
+                    <div className="flex items-stretch gap-2">
+                      <div className="flex-1">
+                        <ChainEditorStepCardRouter
+                          step={item}
+                          index={flatIndex}
+                          available={getAvailableVariablesAtStep(draft, flatIndex, props.repos)}
+                          repos={props.repos}
+                          reviewCommands={props.reviewCommands}
+                          createPrCommands={props.createPrCommands}
+                          onIdChange={(newId) => renameStep(item.id, newId)}
+                          onConfigChange={(config) => updateStepConfig(item.id, config)}
+                          onOnFailureChange={(val) => updateStep(item.id, { onFailure: val })}
+                          onTimeoutChange={(val) => updateStep(item.id, { timeoutSeconds: val })}
+                          onDelete={() => deleteStep(item.id)}
+                        />
+                      </div>
+                      <AddParallelButton
+                        open={parallelAddOpen === topIndex}
+                        kinds={availableStepKinds}
+                        onToggle={() =>
+                          setParallelAddOpen(parallelAddOpen === topIndex ? null : topIndex)
+                        }
+                        onPick={(kind) => addParallelStep(topIndex, kind)}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
             </SortableContext>
           </DndContext>
 
@@ -540,6 +684,118 @@ type AddStepControlProps = {
   kinds: StepKind[]
   onToggle: (next: boolean) => void
   onPick: (kind: StepKind) => void
+}
+
+/**
+ * Returns the flat (linear) index of a step given its top-level position and
+ * inner offset within a parallel group. Solo steps use innerIndex=0.
+ */
+function computeFlatIndex(steps: StepOrGroup[], topIndex: number, innerIndex: number): number {
+  let count = 0
+  for (let i = 0; i < topIndex; i++) {
+    const item = steps[i]
+    count += Array.isArray(item) ? item.length : 1
+  }
+  return count + innerIndex
+}
+
+function StepConnector(): React.JSX.Element {
+  return (
+    <div className="flex justify-center py-1">
+      <div className="h-4 w-px bg-border" />
+    </div>
+  )
+}
+
+/**
+ * Sortable wrapper for a parallel group row. Owns the vertical drag handle
+ * (GripVertical) for the whole group so individual member cards don't need
+ * their own. The composite `groupId` matches the entry in the parent's
+ * `SortableContext` items array.
+ */
+function ParallelGroupContainer({
+  groupId,
+  children
+}: {
+  groupId: string
+  children: React.ReactNode
+}): React.JSX.Element {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id: groupId })
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : undefined
+  }
+  return (
+    <div ref={setNodeRef} style={style} {...attributes}>
+      <div className="flex items-stretch gap-2">
+        <button
+          ref={setActivatorNodeRef}
+          type="button"
+          aria-label="Reorder group"
+          {...listeners}
+          className={cn(
+            'flex shrink-0 items-center rounded text-muted-foreground/50 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring/50',
+            isDragging ? 'cursor-grabbing' : 'cursor-grab'
+          )}
+        >
+          <GripVertical className="size-4" />
+        </button>
+        <div className="flex flex-1 items-stretch gap-2">{children}</div>
+      </div>
+    </div>
+  )
+}
+
+type AddParallelButtonProps = {
+  open: boolean
+  kinds: StepKind[]
+  onToggle: () => void
+  onPick: (kind: StepKind) => void
+}
+
+function AddParallelButton(props: AddParallelButtonProps): React.JSX.Element {
+  return (
+    <div className="relative flex shrink-0 items-center">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Add parallel step"
+        aria-expanded={props.open}
+        onClick={props.onToggle}
+        className="text-muted-foreground hover:text-foreground"
+      >
+        <Plus className="size-3.5" />
+      </Button>
+      {props.open ? (
+        <div
+          role="menu"
+          aria-label="Step kinds"
+          className="absolute left-full z-10 ml-1 flex flex-col rounded-md border border-border bg-background shadow-md"
+        >
+          {props.kinds.map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              role="menuitem"
+              onClick={() => props.onPick(kind)}
+              className="whitespace-nowrap px-3 py-1.5 text-left text-xs hover:bg-accent hover:text-foreground"
+            >
+              {STEP_KIND_LABELS[kind]}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 function AddStepControl(props: AddStepControlProps): React.JSX.Element {

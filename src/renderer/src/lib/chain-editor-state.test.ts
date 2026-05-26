@@ -5,9 +5,13 @@ import {
   renameStepWithRewrites,
   reorderSteps,
   detectFutureReferences,
+  flattenSteps,
+  groupStepAt,
+  ungroupStep,
+  reorderWithinGroup,
   type ChainDraft
 } from './chain-editor-state'
-import type { Step } from '../../../shared/automations-types'
+import type { Step, StepOrGroup } from '../../../shared/automations-types'
 
 const baseDraft: ChainDraft = {
   id: 'a1',
@@ -105,8 +109,8 @@ describe('renameStepWithRewrites', () => {
       }
     ]
     const next = renameStepWithRewrites(steps, 'cw1', 'create-wt')
-    expect(next[0].id).toBe('create-wt')
-    expect((next[1].config as { worktreeRef: string }).worktreeRef).toBe(
+    expect((next[0] as Step).id).toBe('create-wt')
+    expect(((next[1] as Step).config as { worktreeRef: string }).worktreeRef).toBe(
       '{{steps.create-wt.worktreeId}}'
     )
   })
@@ -159,8 +163,8 @@ describe('reorderSteps', () => {
         timeoutSeconds: null
       }
     ]
-    expect(reorderSteps(steps, 0, 2).map((s) => s.id)).toEqual(['b', 'c', 'a'])
-    expect(reorderSteps(steps, 2, 0).map((s) => s.id)).toEqual(['c', 'a', 'b'])
+    expect(reorderSteps(steps, 0, 2).map((s) => (s as Step).id)).toEqual(['b', 'c', 'a'])
+    expect(reorderSteps(steps, 2, 0).map((s) => (s as Step).id)).toEqual(['c', 'a', 'b'])
   })
 
   it('returns a new array (does not mutate the input)', () => {
@@ -284,5 +288,203 @@ describe('detectFutureReferences', () => {
     const violations = detectFutureReferences(steps)
     expect(violations).toHaveLength(1)
     expect(violations[0]).toMatchObject({ fromStepId: 'a', toStepId: 'b' })
+  })
+})
+
+describe('detectFutureReferences with parallel groups', () => {
+  it('flags a sibling reference within a parallel group', () => {
+    const a: Step = {
+      id: 'a',
+      kind: 'run-prompt',
+      config: {
+        worktreeRef: '{{steps.b.paneKey}}',
+        agentId: 'claude',
+        prompt: '',
+        doneDebounceSeconds: 5
+      } as never,
+      onFailure: 'halt',
+      timeoutSeconds: null
+    }
+    const b: Step = {
+      id: 'b',
+      kind: 'run-prompt',
+      config: {} as never,
+      onFailure: 'halt',
+      timeoutSeconds: null
+    }
+    const steps: StepOrGroup[] = [[a, b]]
+    const violations = detectFutureReferences(steps)
+    expect(violations).toHaveLength(1)
+    expect(violations[0]).toMatchObject({ fromStepId: 'a', toStepId: 'b' })
+  })
+
+  it('allows referencing a group member from a step after the group', () => {
+    const a: Step = {
+      id: 'a',
+      kind: 'run-prompt',
+      config: {} as never,
+      onFailure: 'halt',
+      timeoutSeconds: null
+    }
+    const b: Step = {
+      id: 'b',
+      kind: 'run-prompt',
+      config: {} as never,
+      onFailure: 'halt',
+      timeoutSeconds: null
+    }
+    const c: Step = {
+      id: 'c',
+      kind: 'run-prompt',
+      config: {
+        worktreeRef: '{{steps.a.paneKey}}',
+        agentId: 'claude',
+        prompt: '',
+        doneDebounceSeconds: 5
+      } as never,
+      onFailure: 'halt',
+      timeoutSeconds: null
+    }
+    const steps: StepOrGroup[] = [[a, b], c]
+    expect(detectFutureReferences(steps)).toEqual([])
+  })
+})
+
+describe('flattenSteps', () => {
+  const makeStep = (id: string): Step => ({
+    id,
+    kind: 'run-prompt',
+    config: {} as never,
+    onFailure: 'halt',
+    timeoutSeconds: null
+  })
+
+  it('returns the same steps for a flat array (no groups)', () => {
+    const a = makeStep('a')
+    const b = makeStep('b')
+    const input: StepOrGroup[] = [a, b]
+    expect(flattenSteps(input)).toEqual([a, b])
+  })
+
+  it('flattens parallel groups', () => {
+    const a = makeStep('a')
+    const b = makeStep('b')
+    const c = makeStep('c')
+    const d = makeStep('d')
+    const input: StepOrGroup[] = [a, [b, c], d]
+    expect(flattenSteps(input)).toEqual([a, b, c, d])
+  })
+
+  it('handles empty groups', () => {
+    const a = makeStep('a')
+    const b = makeStep('b')
+    const input: StepOrGroup[] = [a, [], b]
+    expect(flattenSteps(input)).toEqual([a, b])
+  })
+
+  it('returns empty for empty input', () => {
+    expect(flattenSteps([])).toEqual([])
+  })
+})
+
+// Shared factory for the parallel-group helpers below.
+const makeStep = (id: string): Step => ({
+  id,
+  kind: 'run-prompt',
+  config: {} as never,
+  onFailure: 'halt',
+  timeoutSeconds: null
+})
+
+describe('groupStepAt', () => {
+  it('wraps a solo step into a parallel group with a new step', () => {
+    const a = makeStep('a')
+    const b = makeStep('b')
+    const n = makeStep('n')
+    const input: StepOrGroup[] = [a, b]
+    const result = groupStepAt(input, 0, n)
+    expect(result).toEqual([[a, n], b])
+  })
+
+  it('appends to an existing parallel group', () => {
+    const a = makeStep('a')
+    const b = makeStep('b')
+    const n = makeStep('n')
+    const input: StepOrGroup[] = [[a, b]]
+    const result = groupStepAt(input, 0, n)
+    expect(result).toEqual([[a, b, n]])
+  })
+
+  it('does not mutate the input array', () => {
+    const a = makeStep('a')
+    const b = makeStep('b')
+    const n = makeStep('n')
+    const input: StepOrGroup[] = [a, b]
+    const result = groupStepAt(input, 0, n)
+    expect(result).not.toBe(input)
+    expect(input).toEqual([a, b])
+  })
+})
+
+describe('ungroupStep', () => {
+  it('removes a step from a 2-step group and auto-unwraps to solo', () => {
+    const a = makeStep('a')
+    const b = makeStep('b')
+    const input: StepOrGroup[] = [[a, b]]
+    const result = ungroupStep(input, 0, 0)
+    expect(result).toEqual([b])
+  })
+
+  it('keeps group intact if 2+ siblings remain after removal', () => {
+    const a = makeStep('a')
+    const b = makeStep('b')
+    const c = makeStep('c')
+    const input: StepOrGroup[] = [[a, b, c]]
+    const result = ungroupStep(input, 0, 1)
+    expect(result).toEqual([[a, c]])
+  })
+
+  it('no-op if target is not a group', () => {
+    const a = makeStep('a')
+    const input: StepOrGroup[] = [a]
+    const result = ungroupStep(input, 0, 0)
+    expect(result).toEqual([a])
+  })
+
+  it('does not mutate the input array', () => {
+    const a = makeStep('a')
+    const b = makeStep('b')
+    const input: StepOrGroup[] = [[a, b]]
+    const result = ungroupStep(input, 0, 0)
+    expect(result).not.toBe(input)
+    expect(input).toEqual([[a, b]])
+  })
+})
+
+describe('reorderWithinGroup', () => {
+  it('reorders siblings within a parallel group', () => {
+    const a = makeStep('a')
+    const b = makeStep('b')
+    const c = makeStep('c')
+    const input: StepOrGroup[] = [[a, b, c]]
+    const result = reorderWithinGroup(input, 0, 0, 2)
+    expect(result).toEqual([[b, c, a]])
+  })
+
+  it('no-op if target is not a group', () => {
+    const a = makeStep('a')
+    const input: StepOrGroup[] = [a]
+    const result = reorderWithinGroup(input, 0, 0, 0)
+    expect(result).toEqual([a])
+  })
+
+  it('does not mutate the input array', () => {
+    const a = makeStep('a')
+    const b = makeStep('b')
+    const c = makeStep('c')
+    const input: StepOrGroup[] = [[a, b, c]]
+    const result = reorderWithinGroup(input, 0, 0, 2)
+    expect(result).not.toBe(input)
+    expect(input).toEqual([[a, b, c]])
   })
 })
