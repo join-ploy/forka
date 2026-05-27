@@ -260,6 +260,7 @@ export type StepKind =
   | 'wait-for-setup'
   | 'run-command'
   | 'update-linear-issue'
+  | 'collect-ci-results'
 
 export type RunPromptConfig = {
   worktreeRef: string
@@ -357,6 +358,12 @@ export type UpdateLinearIssueConfig = {
   stateRef?: string
 }
 
+export type CollectCiResultsConfig = {
+  worktreeRef: string
+  pollIntervalSeconds: number
+  includeComments: boolean
+}
+
 export type StepConfig =
   | RunPromptConfig
   | CreateWorktreeConfig
@@ -364,6 +371,7 @@ export type StepConfig =
   | WaitForSetupConfig
   | RunCommandConfig
   | UpdateLinearIssueConfig
+  | CollectCiResultsConfig
 
 export type Step = {
   id: string
