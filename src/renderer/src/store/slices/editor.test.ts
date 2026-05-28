@@ -3,12 +3,13 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { createEditorSlice } from './editor'
 import type { AppState } from '../types'
 
-const { toastErrorMock } = vi.hoisted(() => ({
-  toastErrorMock: vi.fn()
+const { toastErrorMock, toastInfoMock } = vi.hoisted(() => ({
+  toastErrorMock: vi.fn(),
+  toastInfoMock: vi.fn()
 }))
 
 vi.mock('sonner', () => ({
-  toast: { error: toastErrorMock }
+  toast: { error: toastErrorMock, info: toastInfoMock }
 }))
 
 const { openHttpLinkMock } = vi.hoisted(() => ({ openHttpLinkMock: vi.fn() }))
@@ -619,12 +620,17 @@ describe('createEditorSlice remote branch actions', () => {
 
   beforeEach(() => {
     toastErrorMock.mockReset()
+    toastInfoMock.mockReset()
     gitStatusMock.mockReset()
     gitUpstreamStatusMock.mockReset()
     gitPushMock.mockReset()
     gitPullMock.mockReset()
     gitFetchMock.mockReset()
 
+    // Why: git.push now returns a PushResult (renamed: null on the common
+    // path). Default the mock to that shape so every push/sync test resolves a
+    // valid result instead of undefined (which the renamed handler reads).
+    gitPushMock.mockResolvedValue({ renamed: null })
     gitStatusMock.mockResolvedValue({ entries: [], conflictOperation: 'unknown' })
     gitUpstreamStatusMock.mockResolvedValue({
       hasUpstream: true,
@@ -712,6 +718,38 @@ describe('createEditorSlice remote branch actions', () => {
       connectionId: undefined
     })
     expect(store.getState().isRemoteOperationActive).toBe(false)
+  })
+
+  it('reflects a push-time branch rename in the store and toasts the user', async () => {
+    // Why: when main re-rolls the branch hash to dodge a remote collision, the
+    // renderer must update Worktree.branch immediately and tell the user.
+    const store = createEditorStore()
+    const updateGitIdentitySpy = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    store.setState({ updateWorktreeGitIdentity: updateGitIdentitySpy } as any)
+    gitPushMock.mockResolvedValueOnce({
+      renamed: { from: 'wopping_ferret_a1348', to: 'wopping_ferret_b9d52' }
+    })
+
+    await store.getState().pushBranch('wt-1', '/repo', true)
+
+    expect(updateGitIdentitySpy).toHaveBeenCalledWith('wt-1', {
+      branch: 'wopping_ferret_b9d52'
+    })
+    expect(toastInfoMock).toHaveBeenCalledWith(expect.stringContaining('wopping_ferret_b9d52'))
+  })
+
+  it('does not touch the branch or toast when the push did not rename', async () => {
+    const store = createEditorStore()
+    const updateGitIdentitySpy = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    store.setState({ updateWorktreeGitIdentity: updateGitIdentitySpy } as any)
+    // Default mock already resolves { renamed: null }.
+
+    await store.getState().pushBranch('wt-1', '/repo', true)
+
+    expect(updateGitIdentitySpy).not.toHaveBeenCalled()
+    expect(toastInfoMock).not.toHaveBeenCalled()
   })
 
   it('preserves actionable publish errors and avoids refresh on failure', async () => {

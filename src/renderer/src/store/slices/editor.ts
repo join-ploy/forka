@@ -16,6 +16,7 @@ import type {
   GitStatusEntry,
   GitStatusResult,
   GitUpstreamStatus,
+  PushResult,
   SearchResult,
   WorkspaceSessionState,
   WorkspaceVisibleTabType
@@ -492,6 +493,18 @@ function resolveRemoteOperationErrorMessage(
   }
 
   return error.message
+}
+
+/** Reflect a push-time branch rename (main's remote-collision recovery) in the
+ *  store and tell the user. No-op when the push didn't rename. Updating the
+ *  branch immediately rotates the sidebar label without waiting for the next
+ *  git-status poll. */
+function announcePushRename(result: PushResult, worktreeId: string, get: () => AppState): void {
+  if (!result.renamed) {
+    return
+  }
+  get().updateWorktreeGitIdentity(worktreeId, { branch: result.renamed.to })
+  toast.info(`Branch renamed to ${result.renamed.to} to avoid a remote collision.`)
 }
 
 export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (set, get) => ({
@@ -1937,14 +1950,16 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
     // as fire-and-forget so it doesn't block the mutation but updates the
     // store as soon as the IPC resolves.
     get().beginRemoteOperation(publish ? 'publish' : 'push')
+    let result: PushResult
     try {
-      await window.api.git.push({ worktreePath, publish, connectionId, pushTarget })
+      result = await window.api.git.push({ worktreePath, publish, connectionId, pushTarget })
     } catch (error) {
       toast.error(resolveRemoteOperationErrorMessage(error, { publish, isPush: true }))
       throw error
     } finally {
       get().endRemoteOperation()
     }
+    announcePushRename(result, worktreeId, get)
     void get().fetchUpstreamStatus(worktreeId, worktreePath, connectionId)
   },
   pullBranch: async (worktreeId, worktreePath, connectionId) => {
@@ -1982,11 +1997,12 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
       })
       if (upstreamStatus.ahead > 0) {
         try {
-          await window.api.git.push({
+          const pushResult = await window.api.git.push({
             worktreePath,
             connectionId,
             pushTarget
           })
+          announcePushRename(pushResult, worktreeId, get)
         } catch (error) {
           // Why: format under the user-facing operation (sync) rather than
           // the inner step (push) — the user clicked Sync and shouldn't see
