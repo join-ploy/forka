@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import type { Repo, TerminalTab, WorkspaceSessionState } from '../shared/types'
 import { MAX_BROWSER_HISTORY_ENTRIES } from '../shared/workspace-session-browser-history'
+import { WORKSPACE_NAME_PATTERN } from '../shared/workspace-name-generator'
 
 // Shared mutable state so the electron mock can reference a per-test directory
 const testState = { dir: '' }
@@ -629,7 +630,7 @@ describe('Store', () => {
     const store = await createStore()
     const meta = store.getWorktreeMeta('r1::/wt1')
     expect(meta).toBeDefined()
-    expect(meta!.workspaceName).toMatch(/^[a-z][a-z0-9_]{0,15}$/)
+    expect(meta!.workspaceName).toMatch(WORKSPACE_NAME_PATTERN)
   })
 
   it('assigns distinct workspaceNames to sibling worktrees missing them', async () => {
@@ -697,7 +698,7 @@ describe('Store', () => {
     const store = await createStore()
     expect(store.getWorktreeMeta('r1::/wt1')!.workspaceName).toBe('wise_panther')
     const sibling = store.getWorktreeMeta('r1::/wt2')!.workspaceName
-    expect(sibling).toMatch(/^[a-z][a-z0-9_]{0,15}$/)
+    expect(sibling).toMatch(WORKSPACE_NAME_PATTERN)
     expect(sibling).not.toBe('wise_panther')
   })
 

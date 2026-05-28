@@ -1003,7 +1003,7 @@ export type CreateWorktreeArgs = {
   displayName?: string
   /** Optional caller-supplied workspaceName. Validated server-side against
    *  WORKSPACE_NAME_PATTERN and uniqueness within the repo. When omitted,
-   *  the main process generates a unique adjective_noun. */
+   *  the main process generates a unique adjective_noun_hash. */
   workspaceName?: string
   baseBranch?: string
   setupDecision?: SetupDecision

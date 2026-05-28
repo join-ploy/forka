@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { WORKSPACE_NAME_PATTERN } from '../../shared/workspace-name-generator'
 
 const {
   handleMock,
@@ -429,7 +430,7 @@ describe('registerWorktreeHandlers', () => {
 
     const recorded = store.setWorktreeMeta.mock.calls[0][1]
     expect(recorded).toMatchObject({
-      workspaceName: expect.stringMatching(/^[a-z][a-z0-9_]{0,15}$/)
+      workspaceName: expect.stringMatching(WORKSPACE_NAME_PATTERN)
     })
   })
 

@@ -1,5 +1,3 @@
-import { randomBytes } from 'node:crypto'
-
 // Why: short, snake_case, DB- and shell-safe identifier. Composes cleanly
 // into Postgres database names and `$VAR` expansions. Budget grew from 16
 // to 22 to fit the 5-char hash suffix appended for cross-machine uniqueness.
@@ -171,10 +169,15 @@ const NOUNS: readonly string[] = [
 
 // Why: 5-char base36 random tail gives ~60M combinations per adj_noun pair.
 // Combined with 6400 base combos, the chance of two members independently
-// rolling the same full slug is ~1/400B. Uses crypto.randomBytes so tests
-// that mock Math.random don't accidentally make the hash deterministic.
+// rolling the same full slug is ~1/400B. Uses Web Crypto so this module
+// works in both Node (main process) and the Electron renderer sandbox.
 function pickHashSuffix(): string {
-  return randomBytes(4).readUInt32BE(0).toString(36).padStart(5, '0').slice(0, 5)
+  const buf = new Uint32Array(1)
+  globalThis.crypto.getRandomValues(buf)
+  // Why: slice(-5) keeps the low-order base36 digits, which are uniform-ish
+  // across the uint32 range. slice(0, 5) would bias ~49% of outputs toward
+  // a leading '1' because of how base36 length distributes across 2^32.
+  return buf[0].toString(36).padStart(5, '0').slice(-5)
 }
 
 function pickRandom<T>(items: readonly T[]): T {
