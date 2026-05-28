@@ -9,7 +9,7 @@
 //   pnpm sync:dev-from-prod --no-backup  # skip the backup (dev profile is deleted first)
 //   pnpm sync:dev-from-prod --dry-run    # print what would happen, do nothing
 
-import { existsSync, renameSync, rmSync, cpSync, readdirSync } from 'node:fs'
+import { existsSync, renameSync, rmSync, cpSync, readdirSync, lstatSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 
@@ -94,7 +94,18 @@ if (existsSync(dev)) {
 }
 
 console.log(`[sync:dev-from-prod] copying ${prod} → ${dev}${dryRun ? ' (dry run)' : ''}`)
+// Electron/Chromium leaves UNIX domain sockets (mojo broker, etc.) inside the
+// profile. cpSync throws ENOTSUP on those, aborting mid-copy — filter them out
+// along with any other non-regular special files.
+function isCopyable(src) {
+  try {
+    const stat = lstatSync(src)
+    return stat.isFile() || stat.isDirectory() || stat.isSymbolicLink()
+  } catch {
+    return false
+  }
+}
 if (!dryRun) {
-  cpSync(prod, dev, { recursive: true, errorOnExist: false, force: true })
+  cpSync(prod, dev, { recursive: true, errorOnExist: false, force: true, filter: isCopyable })
 }
 console.log(`[sync:dev-from-prod] done`)

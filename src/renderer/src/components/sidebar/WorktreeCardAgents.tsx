@@ -52,6 +52,7 @@ const WorktreeCardAgentsBody = React.memo(function WorktreeCardAgentsBody({
   const dropAgentStatus = useAppStore((s) => s.dropAgentStatus)
   const dismissRetainedAgent = useAppStore((s) => s.dismissRetainedAgent)
   const acknowledgeAgents = useAppStore((s) => s.acknowledgeAgents)
+  const closeTab = useAppStore((s) => s.closeTab)
 
   // Why: subscribe to the ack map reference (Object.is equality) and derive
   // per-agent unvisited flags locally. Keeps the inline list's bold/mute
@@ -71,10 +72,21 @@ const WorktreeCardAgentsBody = React.memo(function WorktreeCardAgentsBody({
 
   const handleDismissAgent = useCallback(
     (paneKey: string) => {
+      // Why: closing an agent from the sidebar should kill the underlying
+      // terminal tab too, not just hide the row. closeTab cascades into
+      // dropAgentStatusByTabPrefix so the sidebar entry goes away as part of
+      // the tab teardown. Fall through to dropAgentStatus + dismissRetainedAgent
+      // for paneKeys whose tab has already been torn down (e.g. retained-only
+      // rows where the PTY exited and the tab was closed earlier).
+      const colon = paneKey.indexOf(':')
+      const tabId = colon > 0 ? paneKey.slice(0, colon) : ''
+      if (tabId) {
+        closeTab(tabId)
+      }
       dropAgentStatus(paneKey)
       dismissRetainedAgent(paneKey)
     },
-    [dropAgentStatus, dismissRetainedAgent]
+    [closeTab, dropAgentStatus, dismissRetainedAgent]
   )
 
   const handleActivateAgentTab = useCallback(

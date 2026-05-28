@@ -1742,22 +1742,6 @@ export type PersistedUIState = {
    *  stamped on every prior load and so is permanently dirty for the
    *  prior-RC opt-out cohort the widened migration is meant to reach. */
   _inlineAgentsDefaultedForAllUsers?: boolean
-  /** Snapshot of totalAgentsSpawned captured the first time we see the current
-   *  app version. Why: the nag threshold counts agents spawned *since the
-   *  user's last update* so a fresh install or new release does not trigger
-   *  the notification immediately. Reset whenever starNagAppVersion changes. */
-  starNagBaselineAgents?: number | null
-  /** The app version that set the current baseline. When the live app version
-   *  differs from this value, the baseline is re-captured on next agent
-   *  spawn — effectively restarting the nag countdown after each update. */
-  starNagAppVersion?: string | null
-  /** Next threshold (agents spawned since baseline) at which the star-nag
-   *  notification should fire. Starts at 50 and doubles each time the user
-   *  dismisses the notification without starring. */
-  starNagNextThreshold?: number
-  /** Once the user has starred Orca (from any entry point) we permanently
-   *  suppress the nag — no further thresholds, no notifications. */
-  starNagCompleted?: boolean
   trustedOrcaHooks?: PersistedTrustedOrcaHooks
   /** Whether the experimental pet overlay is currently visible. Separate
    *  from the experimentalPet settings flag so "Hide pet" from the

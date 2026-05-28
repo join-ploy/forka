@@ -260,6 +260,58 @@ describe('RunPromptRunner', () => {
     expect(openPromptPane).toHaveBeenCalledTimes(2)
   })
 
+  // ─── dropStep / closePane ────────────────────────────────────────────────
+
+  it('dropStep calls closePane for a self-opened pane and removes the tracker', () => {
+    const closePane = vi.fn()
+    const runner = new RunPromptRunner({
+      openPromptPane: vi.fn().mockResolvedValue({ paneKey: 'tab-A:pane-1' }),
+      getAgentStatus: () => undefined,
+      closePane,
+      now: () => 0
+    })
+    // Manually seed a tracker as if openPromptPane had succeeded.
+    return (async () => {
+      const ctx: StepRunnerCtx = {
+        runId: 'r1',
+        step: baseStep,
+        state: baseState,
+        context: {}
+      }
+      await runner.tick(ctx)
+      runner.dropStep('r1', baseStep.id)
+      expect(closePane).toHaveBeenCalledWith('tab-A:pane-1')
+      // Re-tick should treat this as first-time again (tracker gone).
+      const next = await runner.tick(ctx)
+      expect(next.outcome).toBe('needs-more-time')
+    })()
+  })
+
+  it('dropStep does NOT call closePane when the pane was reused via paneRef', async () => {
+    const sendPromptToPane = vi.fn().mockResolvedValue(undefined)
+    const closePane = vi.fn()
+    const runner = new RunPromptRunner({
+      openPromptPane: vi.fn(),
+      sendPromptToPane,
+      getAgentStatus: () => ({ state: 'done', updatedAt: 0 }),
+      closePane,
+      now: () => 0
+    })
+    const stepReusing: Step = {
+      ...baseStep,
+      config: { ...baseStep.config, paneRef: 'tab-X:pane-1' }
+    }
+    const ctx: StepRunnerCtx = {
+      runId: 'r1',
+      step: stepReusing,
+      state: baseState,
+      context: {}
+    }
+    await runner.tick(ctx)
+    runner.dropStep('r1', stepReusing.id)
+    expect(closePane).not.toHaveBeenCalled()
+  })
+
   // ─── Polling lifecycle ───────────────────────────────────────────────────
 
   it('keeps running while the agent is working', async () => {

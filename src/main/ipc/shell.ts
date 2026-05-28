@@ -1,8 +1,10 @@
 import { ipcMain, shell, dialog } from 'electron'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { constants, copyFile, stat } from 'node:fs/promises'
 import { isAbsolute, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+let caffeinateProcess: ChildProcess | null = null
 
 async function pathExists(pathValue: string): Promise<boolean> {
   try {
@@ -221,4 +223,27 @@ export function registerShellHandlers(): void {
       await copyFile(src, dest, constants.COPYFILE_EXCL)
     }
   )
+
+  ipcMain.handle('shell:caffeinateStart', (): boolean => {
+    if (process.platform !== 'darwin') return false
+    if (caffeinateProcess) return true
+    caffeinateProcess = spawn('caffeinate', ['-dims'], {
+      stdio: 'ignore'
+    })
+    caffeinateProcess.on('exit', () => {
+      caffeinateProcess = null
+    })
+    return true
+  })
+
+  ipcMain.handle('shell:caffeinateStop', (): void => {
+    if (caffeinateProcess) {
+      caffeinateProcess.kill()
+      caffeinateProcess = null
+    }
+  })
+
+  ipcMain.handle('shell:caffeinateStatus', (): boolean => {
+    return caffeinateProcess !== null
+  })
 }

@@ -13,6 +13,7 @@ import { getDefaultUIState } from '../../shared/constants'
 import {
   ArrowLeft,
   ArrowRight,
+  Coffee,
   Minimize2,
   MoreHorizontal,
   PanelLeft,
@@ -35,6 +36,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useIpcEvents } from './hooks/useIpcEvents'
 import { useAutomationDispatchEvents } from './hooks/useAutomationDispatchEvents'
 import { useAutomationOpenPromptPaneEvents } from './hooks/useAutomationOpenPromptPaneEvents'
+import { useAutomationClosePromptPaneEvents } from './hooks/useAutomationClosePromptPaneEvents'
 import { useAutomationSendPromptToPaneEvents } from './hooks/useAutomationSendPromptToPaneEvents'
 import { useAutomationOpenCommandPaneEvents } from './hooks/useAutomationOpenCommandPaneEvents'
 import { useAutomationSendCommandToPaneEvents } from './hooks/useAutomationSendCommandToPaneEvents'
@@ -46,7 +48,6 @@ import { shutdownBufferCaptures } from './components/terminal-pane/shutdown-buff
 import RightSidebar from './components/right-sidebar'
 import { StatusBar } from './components/status-bar/StatusBar'
 import { UpdateCard } from './components/UpdateCard'
-import { StarNagCard } from './components/StarNagCard'
 import { TelemetryFirstLaunchSurface } from './components/TelemetryFirstLaunchSurface'
 import { ZoomOverlay } from './components/ZoomOverlay'
 import { shouldShowOnboarding } from './components/onboarding/should-show-onboarding'
@@ -168,6 +169,12 @@ const OnboardingFlow = lazy(() => import('./components/onboarding/OnboardingFlow
 function App(): React.JSX.Element {
   useUnreadDockBadge()
   const [floatingTerminalOpen, setFloatingTerminalOpen] = useState(false)
+  const [caffeinateActive, setCaffeinateActive] = useState(false)
+
+  useEffect(() => {
+    if (!isMac) return
+    void window.api.shell.caffeinateStatus().then(setCaffeinateActive)
+  }, [])
 
   // Why: Zustand actions are referentially stable, but each individual
   // useAppStore(s => s.someAction) still registers a subscription that React
@@ -302,6 +309,7 @@ function App(): React.JSX.Element {
   useIpcEvents()
   useAutomationDispatchEvents()
   useAutomationOpenPromptPaneEvents()
+  useAutomationClosePromptPaneEvents()
   useAutomationSendPromptToPaneEvents()
   useAutomationOpenCommandPaneEvents()
   useAutomationSendCommandToPaneEvents()
@@ -982,6 +990,31 @@ function App(): React.JSX.Element {
             </TooltipContent>
           </Tooltip>
         )}
+        {isMac && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                className="sidebar-toggle"
+                style={caffeinateActive ? { color: 'white' } : undefined}
+                onClick={async () => {
+                  if (caffeinateActive) {
+                    await window.api.shell.caffeinateStop()
+                    setCaffeinateActive(false)
+                  } else {
+                    const started = await window.api.shell.caffeinateStart()
+                    setCaffeinateActive(started)
+                  }
+                }}
+                aria-label="Toggle caffeinate"
+              >
+                <Coffee size={16} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              {caffeinateActive ? 'Disable caffeinate' : 'Keep awake (caffeinate)'}
+            </TooltipContent>
+          </Tooltip>
+        )}
       </div>
       {/* Why: Back/Forward traverse mixed worktree + Tasks history, so the
           cluster is shown wherever the history shortcut is live (terminal or
@@ -1233,7 +1266,6 @@ function App(): React.JSX.Element {
         </Suspense>
       ) : null}
       <UpdateCard />
-      <StarNagCard />
       {/* Why: the existing-user opt-in banner mounts at App root so it
           renders once per renderer session, not per view. It gates
           internally on the cohort markers populated by the migration,

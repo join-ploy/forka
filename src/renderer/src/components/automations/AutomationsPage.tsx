@@ -350,6 +350,15 @@ export default function AutomationsPage(): React.JSX.Element {
     }
   }
 
+  const retryParallelStep = async (run: AutomationRun, stepId: string): Promise<void> => {
+    try {
+      await window.api.automations.retryParallelStep({ runId: run.id, stepId })
+      await refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to retry step.')
+    }
+  }
+
   // Why: restartRun clones the failed/cancelled run into a new pending row.
   // The 'automations:changed' broadcast refreshes the UI via onChanged, but we
   // also call refresh() here to cover same-tick test/dev environments without
@@ -644,6 +653,7 @@ export default function AutomationsPage(): React.JSX.Element {
             onDelete={requestDeleteAutomation}
             onCancelRun={(run) => void cancelRun(run)}
             onRetryRunFromStep={(run, stepIndex) => void retryRunFromStep(run, stepIndex)}
+            onRetryParallelStep={(run, stepId) => void retryParallelStep(run, stepId)}
             onRestartRun={(run) => void restartRun(run)}
             repos={repos}
           />

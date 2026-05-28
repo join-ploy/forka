@@ -103,6 +103,7 @@ import type {
   AutoDedupEntry,
   RunNowPayload,
   SerializableTriggerSource,
+  TriggerPollStatus,
   TriggerSourceId
 } from '../shared/automations-types'
 import {
@@ -844,8 +845,6 @@ const api = {
       return () => ipcRenderer.removeListener('gh:workItemMutated', listener)
     },
 
-    checkOrcaStarred: (): Promise<boolean | null> => ipcRenderer.invoke('gh:checkOrcaStarred'),
-    starOrca: (): Promise<boolean> => ipcRenderer.invoke('gh:starOrca'),
 
     // Why: rate_limit is exempt from rate-limit accounting, but we still pass
     // `force` through so callers can bust the 30s in-process cache after a
@@ -965,16 +964,6 @@ const api = {
       ipcRenderer.invoke('linear:teamMembers', args)
   },
 
-  starNag: {
-    onShow: (callback: () => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent): void => callback()
-      ipcRenderer.on('star-nag:show', listener)
-      return () => ipcRenderer.removeListener('star-nag:show', listener)
-    },
-    dismiss: (): Promise<void> => ipcRenderer.invoke('star-nag:dismiss'),
-    complete: (): Promise<void> => ipcRenderer.invoke('star-nag:complete'),
-    forceShow: (): Promise<void> => ipcRenderer.invoke('star-nag:forceShow')
-  },
 
   // Why: telemetry uses a loose untyped surface at the preload boundary on
   // purpose — the main-side validator (src/main/telemetry/validator.ts) is
@@ -1188,7 +1177,13 @@ const api = {
       ipcRenderer.invoke('shell:pickDirectory', args),
 
     copyFile: (args: { srcPath: string; destPath: string }): Promise<void> =>
-      ipcRenderer.invoke('shell:copyFile', args)
+      ipcRenderer.invoke('shell:copyFile', args),
+
+    caffeinateStart: (): Promise<boolean> => ipcRenderer.invoke('shell:caffeinateStart'),
+
+    caffeinateStop: (): Promise<void> => ipcRenderer.invoke('shell:caffeinateStop'),
+
+    caffeinateStatus: (): Promise<boolean> => ipcRenderer.invoke('shell:caffeinateStatus')
   },
 
   pet: {
@@ -2493,6 +2488,10 @@ const api = {
       ipcRenderer.invoke('automations:cancelRun', args),
     retryRunFromStep: (args: { runId: string; stepIndex: number }): Promise<AutomationRun | null> =>
       ipcRenderer.invoke('automations:retryRunFromStep', args),
+    retryParallelStep: (args: {
+      runId: string
+      stepId: string
+    }): Promise<AutomationRun | null> => ipcRenderer.invoke('automations:retryParallelStep', args),
     restartRun: (args: { runId: string }): Promise<AutomationRun> =>
       ipcRenderer.invoke('automations:restartRun', args),
     listAutoDedup: (args?: {
@@ -2507,6 +2506,8 @@ const api = {
     markDispatchResult: (result: AutomationDispatchResult): Promise<AutomationRun> =>
       ipcRenderer.invoke('automations:markDispatchResult', result),
     rendererReady: (): Promise<void> => ipcRenderer.invoke('automations:rendererReady'),
+    triggerPollStatus: (): Promise<TriggerPollStatus[]> =>
+      ipcRenderer.invoke('automations:triggerPollStatus'),
     onDispatchRequested: (callback: (request: AutomationDispatchRequest) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, request: AutomationDispatchRequest) =>
         callback(request)
@@ -2563,6 +2564,16 @@ const api = {
       result: { ok: true; paneKey: string } | { ok: false; error: string }
     ): void => {
       ipcRenderer.send(`automations:openPromptPane:reply:${requestId}`, result)
+    },
+    /** Subscribe to main-process requests to close a prompt pane previously
+     *  opened by the chain executor. Fire-and-forget — no reply channel.
+     *  Used on retry to tear down the old agent tab before the executor
+     *  opens a fresh one on its next tick. */
+    onClosePromptPane: (callback: (request: { paneKey: string }) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, request: { paneKey: string }): void =>
+        callback(request)
+      ipcRenderer.on('automations:closePromptPane', listener)
+      return () => ipcRenderer.removeListener('automations:closePromptPane', listener)
     },
     /** Subscribe to per-step sendPromptToPane requests from the main-process
      *  chain executor. The renderer should resolve the paneKey to the first

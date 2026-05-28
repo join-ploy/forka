@@ -450,7 +450,13 @@ export async function createLocalWorktree(
       if (hasLocalBaseRef) {
         const isFresh = await runtime.isRemoteFetchFresh(repo.path, optimisticBase.remote)
         if (!isFresh) {
+          emitCreateWorktreeProgress(mainWindow, 'fetching')
           optimisticFetchPromise = runtime.getOrStartRemoteFetch(repo.path, optimisticBase.remote)
+          // Why: the old "optimistic" path fire-and-forgot this fetch, creating
+          // the worktree against a stale origin/main and only reconciling
+          // afterward. That left new worktrees regularly behind. Await the fetch
+          // so the worktree branches from the latest remote state.
+          await optimisticFetchPromise
         }
       } else {
         emitCreateWorktreeProgress(mainWindow, 'fetching')

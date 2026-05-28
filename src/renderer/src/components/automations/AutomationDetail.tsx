@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { Pencil, Pause, Play, RotateCcw, Square, Trash2, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -24,6 +24,7 @@ import type {
   StepRunState,
   StepRunStatus,
   TriggerConfig,
+  TriggerPollStatus,
   TriggerSourceId,
   UpdateLinearIssueConfig,
   WaitForSetupConfig
@@ -57,6 +58,10 @@ type AutomationDetailProps = {
   onDelete: (automation: Automation) => void
   onCancelRun: (run: AutomationRun) => void
   onRetryRunFromStep: (run: AutomationRun, stepIndex: number) => void
+  /** Retry a single sibling inside a parallel group. Only the targeted
+   *  sibling re-runs; siblings are preserved, downstream is dropped so it
+   *  re-runs with fresh context once the sibling lands terminal. */
+  onRetryParallelStep: (run: AutomationRun, stepId: string) => void
   /** Optional restart handler; if omitted, the Restart button is hidden.
    *  Kept optional so the existing test fixtures (which omit run-action
    *  callbacks) don't widen into more tc:web errors. */
@@ -430,6 +435,7 @@ function AutoTriggersSummary({
   autoTriggers: AutoTrigger[]
   repos: Repo[]
 }): React.JSX.Element {
+  const pollStatuses = useTriggerPollStatus(autoTriggers)
   return (
     <div className="space-y-3 rounded-md border border-border/50 bg-muted/20 px-4 py-3 shadow-sm">
       <div className="flex items-center justify-between">
@@ -439,40 +445,111 @@ function AutoTriggersSummary({
         <span className="text-xs text-muted-foreground">{autoTriggers.length} configured</span>
       </div>
       <ul className="space-y-2">
-        {autoTriggers.map((trig) => (
-          <li
-            key={trig.id}
-            className="rounded-md border border-border/40 bg-card px-3 py-2 text-sm"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Zap className="size-4 text-muted-foreground" />
-                <span className="font-medium">{sourceLabel(trig.source)}</span>
-                <span className="text-xs text-muted-foreground">
-                  {trig.rules.length} {trig.rules.length === 1 ? 'rule' : 'rules'}
-                </span>
+        {autoTriggers.map((trig) => {
+          const poll = pollStatuses.get(trig.source)
+          return (
+            <li
+              key={trig.id}
+              className="rounded-md border border-border/40 bg-card px-3 py-2 text-sm"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Zap className="size-4 text-muted-foreground" />
+                  <span className="font-medium">{sourceLabel(trig.source)}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {trig.rules.length} {trig.rules.length === 1 ? 'rule' : 'rules'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {trig.enabled && poll ? (
+                    <TriggerPollCountdown lastPollAt={poll.lastPollAt} intervalMs={poll.intervalMs} />
+                  ) : null}
+                  <Badge variant={trig.enabled ? 'outline' : 'secondary'}>
+                    {trig.enabled ? 'Active' : 'Disabled'}
+                  </Badge>
+                </div>
               </div>
-              <Badge variant={trig.enabled ? 'outline' : 'secondary'}>
-                {trig.enabled ? 'Active' : 'Disabled'}
-              </Badge>
-            </div>
-            {trig.rules.length === 0 ? (
-              <div className="mt-1 text-xs text-muted-foreground">No rules — never fires.</div>
-            ) : (
-              <ul className="mt-2 space-y-1.5">
-                {trig.rules.map((rule, idx) => (
-                  <li key={rule.id} className="text-xs text-muted-foreground">
-                    <span className="text-foreground/80">Rule {idx + 1}:</span>{' '}
-                    {describeRule(rule, repos)}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </li>
-        ))}
+              {trig.rules.length === 0 ? (
+                <div className="mt-1 text-xs text-muted-foreground">No rules — never fires.</div>
+              ) : (
+                <ul className="mt-2 space-y-1.5">
+                  {trig.rules.map((rule, idx) => (
+                    <li key={rule.id} className="text-xs text-muted-foreground">
+                      <span className="text-foreground/80">Rule {idx + 1}:</span>{' '}
+                      {describeRule(rule, repos)}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          )
+        })}
       </ul>
     </div>
   )
+}
+
+function TriggerPollCountdown({
+  lastPollAt,
+  intervalMs
+}: {
+  lastPollAt: number
+  intervalMs: number
+}): React.JSX.Element | null {
+  const nextPollAt = lastPollAt > 0 ? lastPollAt + intervalMs : null
+  const countdown = useCountdown(nextPollAt)
+  if (countdown == null || lastPollAt === 0) {
+    return null
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="text-[11px] tabular-nums text-muted-foreground">
+          {countdown > 0 ? `${countdown}s` : 'polling…'}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="left" sideOffset={6}>
+        Next poll in {countdown}s
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** Fetches trigger poll status on mount and re-fetches every 5s while any
+ *  trigger is enabled — keeps the countdown accurate between main-process
+ *  broadcasts. */
+function useTriggerPollStatus(
+  triggers: AutoTrigger[]
+): Map<TriggerSourceId, TriggerPollStatus> {
+  const [statuses, setStatuses] = useState<Map<TriggerSourceId, TriggerPollStatus>>(new Map())
+  const hasEnabled = triggers.some((t) => t.enabled)
+
+  useEffect(() => {
+    if (!hasEnabled) {
+      return
+    }
+    let cancelled = false
+    const fetch = (): void => {
+      void window.api.automations.triggerPollStatus().then((list) => {
+        if (cancelled) {
+          return
+        }
+        const map = new Map<TriggerSourceId, TriggerPollStatus>()
+        for (const entry of list) {
+          map.set(entry.source, entry)
+        }
+        setStatuses(map)
+      })
+    }
+    fetch()
+    const id = setInterval(fetch, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [hasEnabled])
+
+  return statuses
 }
 
 const STEP_KIND_LABELS: Record<Step['kind'], string> = {
@@ -647,6 +724,11 @@ function StepRunRow({
   // get stuck waiting on external state that has since resolved (e.g. a
   // collect-ci-results step whose PR linkage wasn't visible to the runner).
   const canRetry = onRetry !== undefined && step.status !== 'running' && step.status !== 'pending'
+  const countdown = useCountdown(step.nextPollAt)
+  const statusLine =
+    step.statusMessage && countdown != null
+      ? `${step.statusMessage} — next check in ${countdown}s`
+      : step.statusMessage ?? null
   return (
     <div className="flex items-center gap-2 px-3 py-2 text-sm">
       <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -656,6 +738,16 @@ function StepRunRow({
           </Badge>
           <span className="truncate font-mono text-xs text-muted-foreground">{step.stepId}</span>
         </div>
+        {statusLine ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="ml-1 truncate text-xs text-muted-foreground">{statusLine}</div>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" align="start" sideOffset={4}>
+              {statusLine}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
         {step.error ? (
           <div className="ml-1 truncate text-xs text-rose-600 dark:text-rose-400">{step.error}</div>
         ) : null}
@@ -683,6 +775,30 @@ function StepRunRow({
       ) : null}
     </div>
   )
+}
+
+/** Live countdown in whole seconds until `targetMs`. Returns null when the
+ *  target is unset or already past. Ticks every second while active. */
+function useCountdown(targetMs: number | null | undefined): number | null {
+  const [remaining, setRemaining] = useState<number | null>(() =>
+    targetMs ? Math.max(0, Math.ceil((targetMs - Date.now()) / 1000)) : null
+  )
+
+  useEffect(() => {
+    if (targetMs == null) {
+      setRemaining(null)
+      return
+    }
+    const update = (): void => {
+      const r = Math.max(0, Math.ceil((targetMs - Date.now()) / 1000))
+      setRemaining(r)
+    }
+    update()
+    const id = setInterval(update, 1000)
+    return () => clearInterval(id)
+  }, [targetMs])
+
+  return remaining
 }
 
 function ToolbarIconButton({
@@ -732,6 +848,7 @@ export function AutomationDetail({
   onDelete,
   onCancelRun,
   onRetryRunFromStep,
+  onRetryParallelStep,
   onRestartRun,
   repos
 }: AutomationDetailProps): React.JSX.Element {
@@ -1024,23 +1141,53 @@ export function AutomationDetail({
               <div className="flex flex-col gap-0 border-t border-border/50 bg-background/60 py-1">
                 {groupedStates.map((item) => {
                   if (Array.isArray(item)) {
+                    // Why: "Retry all" truncates from the first sibling's flat
+                    // index using the existing retryRunFromStep semantics,
+                    // which drops every sibling + downstream and re-runs the
+                    // whole group. Allowed only when at least one sibling is
+                    // terminal/waiting (mirrors the per-step canRetry gate) —
+                    // re-running an in-flight group would race the live tick.
+                    const groupFirstFlatIdx = run.stepStates!.indexOf(item[0])
+                    const canRetryGroup = item.some(
+                      (s) => s.status !== 'running' && s.status !== 'pending'
+                    )
                     return (
                       <div key={item.map((s) => s.stepId).join('+')} className="px-3 py-2">
-                        <div className="mb-1 text-[11px] font-medium uppercase text-muted-foreground">
-                          Parallel
+                        <div className="mb-1 flex items-center justify-between">
+                          <div className="text-[11px] font-medium uppercase text-muted-foreground">
+                            Parallel
+                          </div>
+                          {canRetryGroup ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  aria-label="Retry all parallel steps"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    onRetryRunFromStep(run, groupFirstFlatIdx)
+                                  }}
+                                >
+                                  <RotateCcw className="size-3.5" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent side="left" sideOffset={6}>
+                                Retry all parallel steps
+                              </TooltipContent>
+                            </Tooltip>
+                          ) : null}
                         </div>
                         <div className="flex gap-2">
-                          {item.map((state) => {
-                            const flatIdx = run.stepStates!.indexOf(state)
-                            return (
-                              <div key={state.stepId} className="min-w-0 flex-1">
-                                <StepRunRow
-                                  step={state}
-                                  onRetry={() => onRetryRunFromStep(run, flatIdx)}
-                                />
-                              </div>
-                            )
-                          })}
+                          {item.map((state) => (
+                            <div key={state.stepId} className="min-w-0 flex-1">
+                              <StepRunRow
+                                step={state}
+                                onRetry={() => onRetryParallelStep(run, state.stepId)}
+                              />
+                            </div>
+                          ))}
                         </div>
                       </div>
                     )

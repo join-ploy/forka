@@ -193,6 +193,11 @@ export class ChainExecutor {
     this.validateResult(result, step, run)
 
     state.status = result.status
+    state.statusMessage = result.statusMessage ?? null
+    state.nextPollAt = result.nextPollAt ?? null
+    if (result.openedPane !== undefined) {
+      state.openedPane = result.openedPane
+    }
     if (result.outcome === 'done' || result.outcome === 'failed') {
       state.finishedAt = this.deps.now()
       if (result.output !== undefined) {
@@ -276,6 +281,11 @@ export class ChainExecutor {
         this.validateResult(result, step, run)
 
         state.status = result.status
+        state.statusMessage = result.statusMessage ?? null
+        state.nextPollAt = result.nextPollAt ?? null
+        if (result.openedPane !== undefined) {
+          state.openedPane = result.openedPane
+        }
         if (result.outcome === 'done' || result.outcome === 'failed') {
           state.finishedAt = this.deps.now()
           if (result.output !== undefined) {

@@ -55,9 +55,6 @@ export class StatsCollector {
   private aggregates: StatsAggregates
   private liveAgents = new Map<string, number>() // ptyId → startTimestamp
   private writeTimer: ReturnType<typeof setTimeout> | null = null
-  // Why: star-nag lives in its own service but needs to observe the running
-  // agent-spawned counter. A lightweight listener avoids cyclic imports and
-  // keeps StatsCollector unaware of how the counter is consumed.
   private agentStartListeners: ((totalAgentsSpawned: number) => void)[] = []
 
   constructor() {

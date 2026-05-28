@@ -399,4 +399,27 @@ export type StepRunState = {
   finishedAt: number | null
   output: unknown // shape depends on kind; documented per-runner
   error: string | null
+  /** Short human-readable status line shown while the step is in progress or
+   *  waiting. Runners update this on every tick so the UI can display the
+   *  current phase, e.g. "Waiting for CI — next check in 18s". */
+  statusMessage?: string | null
+  /** Epoch-ms timestamp of the next scheduled poll. The renderer uses this to
+   *  drive a live countdown ("next check in Ns") without waiting for the next
+   *  tick to update the label. */
+  nextPollAt?: number | null
+  /** Persistable record of any pane this step opened or attached to. Written
+   *  by the runner as soon as the pane is bound and survives restart, so the
+   *  retry path can fire closePane even after the runner's in-memory tracker
+   *  map is gone (e.g. user restarted the app between the failed run and
+   *  clicking "Retry all parallel steps"). `selfOpenedPane: true` means the
+   *  step opened its own pane via openPromptPane — close it on retry.
+   *  `selfOpenedPane: false` means the step wrote into an upstream step's
+   *  pane via paneRef — leave it alone since the upstream owns it. */
+  openedPane?: { paneKey: string; selfOpenedPane: boolean } | null
+}
+
+export type TriggerPollStatus = {
+  source: TriggerSourceId
+  lastPollAt: number
+  intervalMs: number
 }

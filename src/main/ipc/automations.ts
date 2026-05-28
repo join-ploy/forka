@@ -8,7 +8,8 @@ import type {
   AutomationRun,
   AutomationUpdateInput,
   AutoDedupEntry,
-  RunNowPayload
+  RunNowPayload,
+  TriggerPollStatus
 } from '../../shared/automations-types'
 
 export function registerAutomationHandlers(store: Store, service: AutomationService): void {
@@ -45,6 +46,11 @@ export function registerAutomationHandlers(store: Store, service: AutomationServ
       service.retryRunFromStep(args.runId, args.stepIndex) ?? null
   )
   ipcMain.handle(
+    'automations:retryParallelStep',
+    (_event, args: { runId: string; stepId: string }): AutomationRun | null =>
+      service.retryParallelStep(args.runId, args.stepId) ?? null
+  )
+  ipcMain.handle(
     'automations:restartRun',
     (_event, args: { runId: string }): Promise<AutomationRun> => service.restartRun(args.runId)
   )
@@ -66,4 +72,8 @@ export function registerAutomationHandlers(store: Store, service: AutomationServ
   ipcMain.handle('automations:rendererReady', (): void => {
     service.setRendererReady()
   })
+  ipcMain.handle(
+    'automations:triggerPollStatus',
+    (): TriggerPollStatus[] => service.getTriggerPollStatus()
+  )
 }

@@ -609,3 +609,147 @@ describe('AutomationService.restartRun', () => {
     expect(trigCtx.linear?.issue.identifier).toBe('ORC-2')
   })
 })
+
+describe('AutomationService retry persisted-pane cleanup', () => {
+  // Why: regression for the "in-memory tracker map cleared by restart, retry
+  // leaves old tabs alive" bug. The runner stamps state.openedPane on the
+  // open-pane tick; the chain executor persists it. Retry must close those
+  // panes via the IPC even when the runner has zero in-memory trackers
+  // (simulated here by constructing a fresh service that never ticked).
+  beforeEach(() => {
+    testState.dir = mkdtempSync(join(tmpdir(), 'orca-automations-test-'))
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-13T09:00:00'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    rmSync(testState.dir, { recursive: true, force: true })
+  })
+
+  const parallelStep = (id: string): Step => ({
+    id,
+    kind: 'run-prompt',
+    config: { worktreeRef: 'wt-1', agentId: 'claude', prompt: 'go', doneDebounceSeconds: 15 },
+    onFailure: 'halt',
+    timeoutSeconds: null
+  })
+
+  it('retryRunFromStep fires closePromptPane for every persisted self-opened pane', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo({ id: 'p1' }))
+    const automation = store.createAutomation({
+      name: 'Parallel chain',
+      prompt: '',
+      agentId: 'claude',
+      projectId: 'p1',
+      workspaceMode: 'new_per_run',
+      timezone: 'UTC',
+      rrule: '',
+      dtstart: 0,
+      trigger: { kind: 'manual' },
+      steps: [[parallelStep('a'), parallelStep('b'), parallelStep('c')]]
+    })
+    const stored = store.listAutomations().find((entry) => entry.id === automation.id)!
+    const run = store.createAutomationRun(stored, Date.now(), 'manual')
+    run.status = 'failed'
+    run.stepStates = [
+      {
+        stepId: 'a',
+        status: 'failed',
+        startedAt: 0,
+        finishedAt: 1,
+        output: null,
+        error: 'boom',
+        openedPane: { paneKey: 'tab-A:pane-1', selfOpenedPane: true }
+      },
+      {
+        stepId: 'b',
+        status: 'succeeded',
+        startedAt: 0,
+        finishedAt: 1,
+        output: { paneKey: 'tab-B:pane-1' },
+        error: null,
+        openedPane: { paneKey: 'tab-B:pane-1', selfOpenedPane: true }
+      },
+      {
+        stepId: 'c',
+        status: 'failed',
+        startedAt: 0,
+        finishedAt: 1,
+        output: null,
+        error: 'boom',
+        // paneRef-attached pane — must NOT be closed (upstream owns it).
+        openedPane: { paneKey: 'tab-UPSTREAM:pane-1', selfOpenedPane: false }
+      }
+    ]
+    store.replaceAutomationRun(run)
+
+    const send = vi.fn()
+    const service = new AutomationService(store, { tickMs: 60_000 })
+    service.setWebContents({ isDestroyed: () => false, send } as never)
+
+    // Retry the entire parallel group (its first sibling sits at flat index 0).
+    const result = service.retryRunFromStep(run.id, 0)
+    expect(result).toBeTruthy()
+
+    const closeCalls = send.mock.calls.filter((c) => c[0] === 'automations:closePromptPane')
+    const closedPaneKeys = closeCalls.map((c) => (c[1] as { paneKey: string }).paneKey)
+    expect(closedPaneKeys).toEqual(
+      expect.arrayContaining(['tab-A:pane-1', 'tab-B:pane-1'])
+    )
+    expect(closedPaneKeys).not.toContain('tab-UPSTREAM:pane-1')
+  })
+
+  it('retryParallelStep fires closePromptPane for the targeted sibling even after restart', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo({ id: 'p1' }))
+    const automation = store.createAutomation({
+      name: 'Parallel chain',
+      prompt: '',
+      agentId: 'claude',
+      projectId: 'p1',
+      workspaceMode: 'new_per_run',
+      timezone: 'UTC',
+      rrule: '',
+      dtstart: 0,
+      trigger: { kind: 'manual' },
+      steps: [[parallelStep('a'), parallelStep('b')]]
+    })
+    const stored = store.listAutomations().find((entry) => entry.id === automation.id)!
+    const run = store.createAutomationRun(stored, Date.now(), 'manual')
+    run.status = 'failed'
+    run.stepStates = [
+      {
+        stepId: 'a',
+        status: 'failed',
+        startedAt: 0,
+        finishedAt: 1,
+        output: null,
+        error: 'boom',
+        openedPane: { paneKey: 'tab-A:pane-1', selfOpenedPane: true }
+      },
+      {
+        stepId: 'b',
+        status: 'succeeded',
+        startedAt: 0,
+        finishedAt: 1,
+        output: { paneKey: 'tab-B:pane-1' },
+        error: null,
+        openedPane: { paneKey: 'tab-B:pane-1', selfOpenedPane: true }
+      }
+    ]
+    store.replaceAutomationRun(run)
+
+    const send = vi.fn()
+    const service = new AutomationService(store, { tickMs: 60_000 })
+    service.setWebContents({ isDestroyed: () => false, send } as never)
+
+    service.retryParallelStep(run.id, 'a')
+    const closeCalls = send.mock.calls.filter((c) => c[0] === 'automations:closePromptPane')
+    const closedPaneKeys = closeCalls.map((c) => (c[1] as { paneKey: string }).paneKey)
+    expect(closedPaneKeys).toContain('tab-A:pane-1')
+    // Sibling 'b' is not being retried — its pane must stay alive.
+    expect(closedPaneKeys).not.toContain('tab-B:pane-1')
+  })
+})

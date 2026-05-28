@@ -149,6 +149,7 @@ describe('AutomationDetail step states', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
       />
     )
     expect(markup).toContain('create-wt')
@@ -178,6 +179,7 @@ describe('AutomationDetail step states', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
       />
     )
     // Step-row identifiers from the chain run must not appear in the legacy
@@ -228,6 +230,7 @@ describe('AutomationDetail step states', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
       />
     )
     expect(markup).toContain('ORC-42')
@@ -253,6 +256,7 @@ describe('AutomationDetail step states', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
       />
     )
     expect(markup).not.toContain('ORC-')
@@ -314,6 +318,7 @@ describe('AutomationDetail trigger badge', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
         repos={[seededRepo]}
       />
     )
@@ -338,6 +343,7 @@ describe('AutomationDetail trigger badge', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
       />
     )
     expect(markup).toContain('Manual')
@@ -361,6 +367,7 @@ describe('AutomationDetail trigger badge', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
       />
     )
     expect(markup).toContain('Scheduled')
@@ -391,6 +398,7 @@ describe('AutomationDetail trigger badge', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
         repos={[seededRepo]}
       />
     )
@@ -434,6 +442,7 @@ describe('AutomationDetail restart button', () => {
           onDelete={noop}
           onCancelRun={noop}
           onRetryRunFromStep={noop}
+          onRetryParallelStep={noop}
           onRestartRun={noop}
         />
       )
@@ -468,6 +477,7 @@ describe('AutomationDetail restart button', () => {
           onDelete={noop}
           onCancelRun={noop}
           onRetryRunFromStep={noop}
+          onRetryParallelStep={noop}
           onRestartRun={noop}
         />
       )
@@ -493,6 +503,7 @@ describe('AutomationDetail restart button', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
       />
     )
     expect(markup).not.toContain('Restart run')
@@ -523,6 +534,7 @@ describe('AutomationDetail restart lineage', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
       />
     )
     expect(markup).toContain('Restarted from #r-parent')
@@ -552,6 +564,7 @@ describe('AutomationDetail restart lineage', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
       />
     )
     expect(markup).toContain('Restarted as #r-child-')
@@ -634,6 +647,7 @@ describe('AutomationDetail auto-trigger overview', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
         repos={[seededRepo]}
       />
     )
@@ -682,6 +696,7 @@ describe('AutomationDetail auto-trigger overview', () => {
         onDelete={noop}
         onCancelRun={noop}
         onRetryRunFromStep={noop}
+        onRetryParallelStep={noop}
       />
     )
     expect(markup).toContain('Manual trigger')

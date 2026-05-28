@@ -40,7 +40,6 @@ import { CodexAccountService } from './codex-accounts/service'
 import { CodexRuntimeHomeService } from './codex-accounts/runtime-home-service'
 import { ClaudeAccountService } from './claude-accounts/service'
 import { ClaudeRuntimeAuthService } from './claude-accounts/runtime-auth-service'
-import { StarNagService } from './star-nag/service'
 import { agentHookServer } from './agent-hooks/server'
 import { claudeHookService } from './claude/hook-service'
 import { codexHookService } from './codex/hook-service'
@@ -95,7 +94,6 @@ let claudeRuntimeAuth: ClaudeRuntimeAuthService | null = null
 let runtime: OrcaRuntimeService | null = null
 let rateLimits: RateLimitService | null = null
 let runtimeRpc: OrcaRuntimeRpcServer | null = null
-let starNag: StarNagService | null = null
 let watcherShutdownPromise: Promise<void> | null = null
 let watcherShutdownDone = false
 let automations: AutomationService | null = null
@@ -827,9 +825,6 @@ app.whenReady().then(async () => {
   // setInterval cadence elapses, so this assignment lands before any dispatch.
   serviceRef = automations
   runtime.setAccountServices({ claudeAccounts, codexAccounts, rateLimits })
-  starNag = new StarNagService(store, stats)
-  starNag.start()
-  starNag.registerIpcHandlers()
   runtime.setAgentBrowserBridge(new AgentBrowserBridge(browserManager))
   nativeTheme.themeSource = store.getSettings().theme ?? 'system'
   // Why: managed hook installation mutates user-global agent config. Each
@@ -1010,7 +1005,6 @@ app.on('will-quit', (e) => {
   // are still running. killAllPty() does not call runtime.onPtyExit(),
   // so without this ordering, running agents would produce orphaned
   // agent_start events with no matching stops.
-  starNag?.stop()
   automations?.stop()
   setUnreadDockBadgeCount(0)
   agentHookServer.stop()

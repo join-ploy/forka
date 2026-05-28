@@ -42,10 +42,13 @@ export class AutoTriggerEngine {
     this.deps = deps
   }
 
+  private intervalMs = 0
+
   start(intervalMs: number): void {
     if (this.timer) {
       return
     }
+    this.intervalMs = intervalMs
     this.timer = setInterval(() => {
       void this.tick()
     }, intervalMs)
@@ -156,6 +159,26 @@ export class AutoTriggerEngine {
         this.reportError(`tick:event(${sourceId}:${event.entityId})`, err)
       }
     }
+  }
+
+  /** Snapshot of current poll timing for each active source. */
+  getPollStatus(): Map<TriggerSourceId, { lastPollAt: number; intervalMs: number }> {
+    const result = new Map<TriggerSourceId, { lastPollAt: number; intervalMs: number }>()
+    const automations = this.deps.listAutomations()
+    for (const a of automations) {
+      if (!a.trigger || !a.steps || a.steps.length === 0) {
+        continue
+      }
+      for (const t of a.autoTriggers ?? []) {
+        if (t.enabled && !result.has(t.source)) {
+          result.set(t.source, {
+            lastPollAt: this.deps.lastPoll(t.source, this.deps.hostId),
+            intervalMs: this.intervalMs
+          })
+        }
+      }
+    }
+    return result
   }
 
   private reportError(where: string, err: unknown): void {

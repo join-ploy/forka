@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ExternalLink, FolderPlus, GitBranchPlus, Star } from 'lucide-react'
-import { cn } from '../lib/utils'
+import { useEffect, useMemo, useState } from 'react'
+import { AlertTriangle, ExternalLink, FolderPlus, GitBranchPlus } from 'lucide-react'
 import { useAppStore } from '../store'
 import { isGitRepoKind } from '../../../shared/repo-kind'
 import { ShortcutKeyCombo } from './ShortcutKeyCombo'
@@ -55,109 +54,6 @@ function getPreflightIssues(status: {
   }
 
   return issues
-}
-
-type StarState = 'loading' | 'starred' | 'not-starred' | 'hidden'
-
-function GitHubStarButton({ hasRepos }: { hasRepos: boolean }): React.JSX.Element | null {
-  const [state, setState] = useState<StarState>('loading')
-  const [menuOpen, setMenuOpen] = useState(false)
-  const wrapperRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    void window.api.gh.checkOrcaStarred().then((result) => {
-      if (cancelled) {
-        return
-      }
-      if (result === null) {
-        setState('hidden')
-      } else {
-        setState(result ? 'starred' : 'not-starred')
-      }
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!menuOpen) {
-      return
-    }
-    const onDocClick = (e: MouseEvent): void => {
-      if (!wrapperRef.current?.contains(e.target as Node)) {
-        setMenuOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', onDocClick)
-    return () => document.removeEventListener('mousedown', onDocClick)
-  }, [menuOpen])
-
-  const handleClick = async (): Promise<void> => {
-    if (state === 'starred') {
-      setMenuOpen((v) => !v)
-      return
-    }
-    if (state !== 'not-starred') {
-      return
-    }
-    setState('starred') // optimistic
-    const ok = await window.api.gh.starOrca()
-    if (!ok) {
-      setState('not-starred')
-      return
-    }
-    // Why: starring from any entry point mutes the threshold-based nag.
-    // Without this the background notification could still fire on the next
-    // threshold crossing, which would feel like a bug to the user.
-    await window.api.starNag.complete()
-  }
-
-  // Hide if gh CLI is unavailable, or if the user has already starred and added a repo
-  if (state === 'hidden' || (state === 'starred' && hasRepos)) {
-    return null
-  }
-
-  return (
-    <div ref={wrapperRef} className="relative inline-block">
-      <button
-        className={cn(
-          'inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-[13px] font-medium transition-all duration-300',
-          state === 'loading' && 'pointer-events-none opacity-0',
-          state === 'not-starred' &&
-            'cursor-pointer border-amber-500/60 text-amber-700 hover:border-amber-500/80 hover:bg-amber-400/10 dark:border-amber-400/30 dark:text-amber-300/90 dark:hover:border-amber-400/50 dark:hover:bg-amber-400/[0.08]',
-          state === 'starred' &&
-            'cursor-pointer border-amber-500/50 bg-amber-400/10 text-amber-700 dark:border-amber-400/25 dark:bg-amber-400/[0.06] dark:text-amber-400/60'
-        )}
-        onClick={handleClick}
-        disabled={state === 'loading'}
-      >
-        <Star
-          className={cn(
-            'size-3.5 transition-all duration-300',
-            state === 'starred'
-              ? 'fill-amber-500/70 text-amber-500/70 dark:fill-amber-400/60 dark:text-amber-400/60'
-              : 'text-amber-600 dark:text-amber-400/80'
-          )}
-        />
-        {state === 'starred' ? 'Starred on GitHub' : 'Star on GitHub'}
-      </button>
-      {state === 'starred' && menuOpen && (
-        <div className="absolute right-0 top-[calc(100%+4px)] z-10 min-w-[100px] rounded-md border border-border bg-popover py-1 shadow-md">
-          <button
-            className="w-full px-3 py-1.5 text-left text-[13px] text-foreground hover:bg-muted"
-            onClick={() => {
-              setMenuOpen(false)
-              setState('hidden')
-            }}
-          >
-            Hide
-          </button>
-        </div>
-      )}
-    </div>
-  )
 }
 
 function PreflightBanner({ issues }: { issues: PreflightIssue[] }): React.JSX.Element {
@@ -310,9 +206,6 @@ export default function Landing(): React.JSX.Element {
         </div>
       </div>
 
-      <div className="absolute bottom-6 left-0 right-0 flex justify-center">
-        <GitHubStarButton hasRepos={repos.length > 0} />
-      </div>
     </div>
   )
 }

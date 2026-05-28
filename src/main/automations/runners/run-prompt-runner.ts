@@ -80,6 +80,12 @@ export type RunPromptDeps = {
    *  what the renderer sees into a bounded OutputTail. Same shape as
    *  RunCommandDeps['subscribePtyData']. */
   subscribePtyData?: (listener: (ptyId: string, data: string) => void) => () => void
+  /** Close a pane this runner previously self-opened via openPromptPane.
+   *  Invoked from dropStep on retry so the old agent tab is torn down before
+   *  the executor opens a fresh one. Skipped for paneRef-reused trackers —
+   *  those panes belong to upstream steps and must remain available for
+   *  downstream paneRef consumers. Fire-and-forget. */
+  closePane?: (paneKey: string) => void
   now: () => number
 }
 
@@ -119,6 +125,12 @@ type Tracker = {
    *  lingering `done` state would satisfy the debounce and the step would
    *  succeed before the new prompt produced any work. */
   requiresWorkingFirst: boolean
+  /** True when this step opened the pane itself via openPromptPane (false
+   *  for paneRef reuse). dropStep uses this to decide whether to close the
+   *  pane on retry: self-opened panes are torn down so the retry gets a
+   *  fresh agent session; paneRef panes are left alone since they're owned
+   *  by an upstream step. */
+  selfOpenedPane: boolean
   /** Wall-clock when the agent entered waiting/blocked state. Used to pause
    *  the timeout timer — elapsed wait time is added to openedAt when the
    *  agent resumes so only active execution counts toward timeoutSeconds. */
@@ -316,13 +328,20 @@ export class RunPromptRunner implements StepRunner {
           }
           throw e
         }
-        tracker = this.buildTracker(paneRef, { requiresWorkingFirst: true })
+        tracker = this.buildTracker(paneRef, {
+          requiresWorkingFirst: true,
+          selfOpenedPane: false
+        })
         if (!runTrackers) {
           runTrackers = new Map()
           this.trackers.set(ctx.runId, runTrackers)
         }
         runTrackers.set(ctx.step.id, tracker)
-        return { outcome: 'needs-more-time', status: 'running' }
+        return {
+          outcome: 'needs-more-time',
+          status: 'running',
+          openedPane: { paneKey: paneRef, selfOpenedPane: false }
+        }
       }
 
       let paneKey: string
@@ -352,13 +371,20 @@ export class RunPromptRunner implements StepRunner {
         }
         throw e
       }
-      tracker = this.buildTracker(paneKey, { requiresWorkingFirst: false })
+      tracker = this.buildTracker(paneKey, {
+        requiresWorkingFirst: false,
+        selfOpenedPane: true
+      })
       if (!runTrackers) {
         runTrackers = new Map()
         this.trackers.set(ctx.runId, runTrackers)
       }
       runTrackers.set(ctx.step.id, tracker)
-      return { outcome: 'needs-more-time', status: 'running' }
+      return {
+        outcome: 'needs-more-time',
+        status: 'running',
+        openedPane: { paneKey, selfOpenedPane: true }
+      }
     }
 
     const now = this.deps.now()
@@ -468,7 +494,10 @@ export class RunPromptRunner implements StepRunner {
    *  if the deps aren't wired or the pane isn't bound to a live PTY yet, we
    *  fall through with `outputTail = null` and downstream callsites surface
    *  an empty string. */
-  private buildTracker(paneKey: string, opts: { requiresWorkingFirst: boolean }): Tracker {
+  private buildTracker(
+    paneKey: string,
+    opts: { requiresWorkingFirst: boolean; selfOpenedPane: boolean }
+  ): Tracker {
     const tracker: Tracker = {
       paneKey,
       openedAt: this.deps.now(),
@@ -476,6 +505,7 @@ export class RunPromptRunner implements StepRunner {
       outputTail: null,
       workingSeen: false,
       requiresWorkingFirst: opts.requiresWorkingFirst,
+      selfOpenedPane: opts.selfOpenedPane,
       waitStartedAt: null,
       unsubscribe: () => {}
     }
@@ -537,7 +567,9 @@ export class RunPromptRunner implements StepRunner {
 
   /** Drop a single step's tracker — used on retry-from-step so the retried
    *  step starts fresh while sibling completed steps' downstream context is
-   *  preserved. */
+   *  preserved. When the tracker self-opened its pane (no paneRef reuse),
+   *  also ask the renderer to close that pane so the retry doesn't leave
+   *  the previous agent tab hanging next to a freshly-launched one. */
   dropStep(runId: string, stepId: string): void {
     const runTrackers = this.trackers.get(runId)
     const tracker = runTrackers?.get(stepId)
@@ -545,6 +577,9 @@ export class RunPromptRunner implements StepRunner {
       return
     }
     this.cleanup(tracker)
+    if (tracker.selfOpenedPane) {
+      this.deps.closePane?.(tracker.paneKey)
+    }
     runTrackers!.delete(stepId)
     if (runTrackers!.size === 0) {
       this.trackers.delete(runId)

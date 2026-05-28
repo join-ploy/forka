@@ -161,7 +161,11 @@ export class CollectCiResultsRunner implements StepRunner {
           prNumber = await this.deps.resolveLinkedPR(meta.path, repoPath)
         }
         if (prNumber == null) {
-          return { outcome: 'needs-more-time', status: 'waiting' }
+          return {
+            outcome: 'needs-more-time',
+            status: 'waiting',
+            statusMessage: 'Waiting for PR to be linked'
+          }
         }
         targets.push({ worktreeId: id, repoPath, prNumber })
       }
@@ -172,15 +176,34 @@ export class CollectCiResultsRunner implements StepRunner {
 
     // ── Phase 3: waiting-for-ci ─────────────────────────────────────────
     if (tracker.phase === 'waiting-for-ci') {
-      if (now - tracker.lastPollAt < pollIntervalMs) {
-        return { outcome: 'needs-more-time', status: 'waiting' }
+      const nextPollAt = tracker.lastPollAt + pollIntervalMs
+      if (now < nextPollAt) {
+        const prLabel = tracker.resolvedTargets
+          .map((t) => `#${t.prNumber}`)
+          .join(', ')
+        return {
+          outcome: 'needs-more-time',
+          status: 'waiting',
+          statusMessage: `Waiting for CI on ${prLabel}`,
+          nextPollAt
+        }
       }
       tracker.lastPollAt = now
 
       for (const target of tracker.resolvedTargets) {
         const checks = await this.deps.getPRChecks(target.repoPath, target.prNumber)
-        if (checks.some((c) => c.status !== 'completed')) {
-          return { outcome: 'needs-more-time', status: 'waiting' }
+        const pending = checks.filter((c) => c.status !== 'completed')
+        if (pending.length > 0) {
+          const nextPoll = now + pollIntervalMs
+          const prLabel = tracker.resolvedTargets
+            .map((t) => `#${t.prNumber}`)
+            .join(', ')
+          return {
+            outcome: 'needs-more-time',
+            status: 'waiting',
+            statusMessage: `Waiting for CI on ${prLabel} — ${pending.length} check${pending.length === 1 ? '' : 's'} still running`,
+            nextPollAt: nextPoll
+          }
         }
       }
 

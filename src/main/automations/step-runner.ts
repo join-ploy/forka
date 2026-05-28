@@ -15,6 +15,13 @@ export type StepRunnerResult = {
   output?: unknown
   error?: string | null
   contextPatch?: Record<string, unknown>
+  statusMessage?: string | null
+  nextPollAt?: number | null
+  /** Persists the paneKey this step opened (or attached to via paneRef) onto
+   *  state.openedPane. The chain executor applies it on every tick regardless
+   *  of outcome, so the field is available to the retry-cleanup path even
+   *  after a restart wipes the runner's in-memory tracker map. */
+  openedPane?: { paneKey: string; selfOpenedPane: boolean } | null
 }
 
 export type StepRunner = {

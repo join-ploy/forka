@@ -25,8 +25,6 @@ import {
   addPRReviewCommentReply,
   updatePRTitle,
   mergePR,
-  checkOrcaStarred,
-  starOrca
 } from '../github/client'
 import { getWorkItemDetails, getPRFileContents } from '../github/work-item-details'
 import { getRateLimit } from '../github/rate-limit'
@@ -469,10 +467,7 @@ export function registerGitHubHandlers(store: Store, stats: StatsCollector): voi
     return listAssignableUsers(repo.path, repo.issueSourcePreference)
   })
 
-  // Star operations target the Orca repo itself — no repoPath validation needed
   ipcMain.handle('gh:viewer', () => getAuthenticatedViewer())
-  ipcMain.handle('gh:checkOrcaStarred', () => checkOrcaStarred())
-  ipcMain.handle('gh:starOrca', () => starOrca())
 
   // Why: `rate_limit` is exempt from GitHub's rate-limit accounting, so
   // polling is cheap. A 30s in-process cache still avoids the gh subprocess

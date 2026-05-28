@@ -196,6 +196,7 @@ import type {
   AutoDedupEntry,
   RunNowPayload,
   SerializableTriggerSource,
+  TriggerPollStatus,
   TriggerSourceId
 } from '../shared/automations-types'
 
@@ -701,8 +702,6 @@ export type PreloadApi = {
     onWorkItemMutated: (
       callback: (payload: { repoPath: string; type: 'issue' | 'pr'; number: number }) => void
     ) => () => void
-    checkOrcaStarred: () => Promise<boolean | null>
-    starOrca: () => Promise<boolean>
     /**
      * GitHub API rate-limit snapshot. Does NOT consume quota (the
      * `rate_limit` endpoint is exempt). Cached 30s server-side — pass
@@ -782,12 +781,6 @@ export type PreloadApi = {
     teamStates: (args: { teamId: string }) => Promise<LinearWorkflowState[]>
     teamLabels: (args: { teamId: string }) => Promise<LinearLabel[]>
     teamMembers: (args: { teamId: string }) => Promise<LinearMember[]>
-  }
-  starNag: {
-    onShow: (callback: () => void) => () => void
-    dismiss: () => Promise<void>
-    complete: () => Promise<void>
-    forceShow: () => Promise<void>
   }
   /** Fire-and-forget track. Loose typing at the IPC boundary on purpose —
    *  the main-side validator is the single enforcement point. Renderer call
@@ -892,6 +885,9 @@ export type PreloadApi = {
     pickAudio: () => Promise<string | null>
     pickDirectory: (args: { defaultPath?: string }) => Promise<string | null>
     copyFile: (args: { srcPath: string; destPath: string }) => Promise<void>
+    caffeinateStart: () => Promise<boolean>
+    caffeinateStop: () => Promise<void>
+    caffeinateStatus: () => Promise<boolean>
   }
   pet: {
     import: () => Promise<CustomPet | null>
@@ -1350,6 +1346,10 @@ export type PreloadApi = {
     runNow: (args: { id: string; payload?: RunNowPayload }) => Promise<AutomationRun>
     cancelRun: (args: { runId: string }) => Promise<AutomationRun | null>
     retryRunFromStep: (args: { runId: string; stepIndex: number }) => Promise<AutomationRun | null>
+    retryParallelStep: (args: {
+      runId: string
+      stepId: string
+    }) => Promise<AutomationRun | null>
     restartRun: (args: { runId: string }) => Promise<AutomationRun>
     listAutoDedup: (args?: {
       automationId?: string
@@ -1362,6 +1362,7 @@ export type PreloadApi = {
     }) => Promise<void>
     markDispatchResult: (result: AutomationDispatchResult) => Promise<AutomationRun>
     rendererReady: () => Promise<void>
+    triggerPollStatus: () => Promise<TriggerPollStatus[]>
     onDispatchRequested: (callback: (request: AutomationDispatchRequest) => void) => () => void
     onChanged: (callback: () => void) => () => void
     onOpenPromptPane: (
@@ -1384,6 +1385,7 @@ export type PreloadApi = {
       requestId: string,
       result: { ok: true; paneKey: string } | { ok: false; error: string }
     ) => void
+    onClosePromptPane: (callback: (request: { paneKey: string }) => void) => () => void
     onSendPromptToPane: (
       callback: (request: { requestId: string; paneKey: string; prompt: string }) => void
     ) => () => void

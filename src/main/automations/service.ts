@@ -14,6 +14,7 @@ import type {
   RunNowPayload,
   Step,
   StepOrGroup,
+  StepRunState,
   TriggerSourceId
 } from '../../shared/automations-types'
 import type { TuiAgent } from '../../shared/types'
@@ -23,6 +24,7 @@ import type { SetupScriptEntry } from '../setup-script/registry'
 import type { PtyExitEntry } from '../pty/exit-registry'
 import { ChainExecutor } from './chain-executor'
 import { openPromptPane } from './open-prompt-pane'
+import { closePromptPane } from './close-prompt-pane'
 import { sendPromptToPane } from './send-prompt-to-pane'
 import { openCommandPane } from './open-command-pane'
 import { sendCommandToPane } from './send-command-to-pane'
@@ -71,6 +73,7 @@ function isActiveChainRunStatus(status: AutomationRunStatus): boolean {
 type AutoTriggerEngineLike = {
   start: (intervalMs: number) => void
   stop: () => void
+  getPollStatus?: () => Map<TriggerSourceId, { lastPollAt: number; intervalMs: number }>
 }
 
 export type AutomationServiceOpts = {
@@ -215,6 +218,16 @@ export class AutomationService {
     this.runPromptRunner = new RunPromptRunner({
       openPromptPane: async (params) => openPromptPane(params, requirePaneCtx('prompt')),
       sendPromptToPane: async (params) => sendPromptToPane(params, requirePaneCtx('prompt')),
+      closePane: (paneKey: string) => {
+        // Why: fire-and-forget. A destroyed webContents or missing renderer is
+        // a no-op (no retry needed) since the runner is already discarding the
+        // tracker for this step.
+        const webContents = this.getWebContents()
+        if (!webContents || webContents.isDestroyed()) {
+          return
+        }
+        closePromptPane({ paneKey }, { webContents })
+      },
       getAgentStatus: this.getAgentStatus,
       // Why: a chain run hits this milliseconds after createManagedWorktree
       // returns; the renderer's worktrees:changed broadcast may not have
@@ -821,20 +834,153 @@ export class AutomationService {
     if (!automation || !automation.steps || stepIndex < 0 || stepIndex >= flatSteps.length) {
       return undefined
     }
-    const droppedStepIds = (run.stepStates ?? []).slice(stepIndex).map((state) => state.stepId)
+    const droppedStates = (run.stepStates ?? []).slice(stepIndex)
     run.stepStates = (run.stepStates ?? []).slice(0, stepIndex)
     run.status = 'running'
     run.error = null
     run.finishedAt = undefined
     this.store.replaceAutomationRun(run)
-    for (const stepId of droppedStepIds) {
+    for (const state of droppedStates) {
       for (const runner of this.allRunners()) {
-        runner.dropStep?.(run.id, stepId)
+        runner.dropStep?.(run.id, state.stepId)
       }
     }
+    // Why: close any panes the prior steps opened. The runner-tracker path
+    // above only fires when the runner still has an in-memory tracker, which
+    // it loses across app restart. The persisted state.openedPane survives,
+    // so this fallback fires closePane even after restart-then-retry.
+    this.closePersistedStepPanes(droppedStates)
     this.broadcastAutomationsChanged()
     // Why: kick a tick immediately rather than wait for the next scheduler
     // cadence so the operator sees the retry start right away.
+    this.wakeChains()
+    return run
+  }
+
+  /** Fire closePane for every state with a persisted self-opened pane. Used
+   *  on retry to tear down prior-attempt tabs whose runner-side tracker was
+   *  lost across restart. paneRef-attached panes (`selfOpenedPane: false`)
+   *  are owned by upstream steps and intentionally left alone. */
+  private closePersistedStepPanes(states: StepRunState[]): void {
+    const webContents = this.getWebContents()
+    if (!webContents || webContents.isDestroyed()) {
+      return
+    }
+    for (const state of states) {
+      const opened = state.openedPane
+      if (opened && opened.selfOpenedPane && opened.paneKey) {
+        closePromptPane({ paneKey: opened.paneKey }, { webContents })
+      }
+    }
+  }
+
+  /** Operator-initiated retry of a single sibling inside a parallel group.
+   *  Resets just the targeted step's state so the chain executor re-ticks
+   *  that sibling on its next pass; sibling states are preserved (so an
+   *  unrelated success or still-in-flight sibling isn't disturbed).
+   *  Downstream stepStates after the group are dropped so the chain re-runs
+   *  with fresh context once the retried sibling lands terminal. Falls back
+   *  to {@link retryRunFromStep} when the step isn't a parallel-group
+   *  member, so the renderer can route every sibling's retry button
+   *  through this single method. */
+  retryParallelStep(runId: string, stepId: string): AutomationRun | undefined {
+    const run = this.store.listAutomationRuns().find((entry) => entry.id === runId)
+    if (!run) {
+      return undefined
+    }
+    const automation = this.store.listAutomations().find((entry) => entry.id === run.automationId)
+    if (!automation || !automation.steps) {
+      return undefined
+    }
+    // Walk the StepOrGroup[] array to locate the step. We need:
+    //   - groupStart: flat index of the group's first sibling
+    //   - groupEnd: flat index just past the group's last sibling
+    //   - stepFlatIdx: flat index of the targeted step
+    let consumed = 0
+    let groupStart = -1
+    let groupEnd = -1
+    let stepFlatIdx = -1
+    for (const item of automation.steps) {
+      if (Array.isArray(item)) {
+        const inGroup = item.findIndex((s) => s.id === stepId)
+        if (inGroup >= 0) {
+          groupStart = consumed
+          groupEnd = consumed + item.length
+          stepFlatIdx = consumed + inGroup
+          break
+        }
+        consumed += item.length
+      } else {
+        if (item.id === stepId) {
+          stepFlatIdx = consumed
+          break
+        }
+        consumed += 1
+      }
+    }
+    if (stepFlatIdx < 0) {
+      return undefined
+    }
+    // Solo step → fall through to the existing per-step truncate semantics.
+    if (groupStart < 0) {
+      return this.retryRunFromStep(runId, stepFlatIdx)
+    }
+    const states = run.stepStates ?? []
+    if (stepFlatIdx >= states.length) {
+      // Step never ran — nothing to retry.
+      return undefined
+    }
+    const now = Date.now()
+    // Reset the targeted sibling's state in place so the parallel-group
+    // executor sees it as non-terminal on the next tick. We don't push a
+    // fresh state object because makeStepState lives in chain-executor; the
+    // executor's tickParallelGroup re-ticks any non-terminal sibling, which
+    // is what we want here.
+    const targetState = states[stepFlatIdx]
+    // Why: snapshot the prior openedPane BEFORE the in-place reset clears it,
+    // so the persisted-pane cleanup below can still fire closePane for the
+    // target sibling. We pair the snapshot back with this state's stepId by
+    // cloning a minimal record for closePersistedStepPanes.
+    const targetPriorOpened = targetState.openedPane ?? null
+    targetState.status = 'running'
+    targetState.statusMessage = null
+    targetState.nextPollAt = null
+    targetState.startedAt = now
+    targetState.finishedAt = null
+    targetState.output = null
+    targetState.error = null
+    targetState.openedPane = null
+    // Drop every stepState after the group so downstream re-runs with the
+    // retried sibling's fresh output. Capture the dropped states so the
+    // persisted-pane cleanup below can iterate them.
+    const droppedStates: StepRunState[] = []
+    if (groupEnd < states.length) {
+      droppedStates.push(...states.slice(groupEnd))
+      run.stepStates = states.slice(0, groupEnd)
+    } else {
+      run.stepStates = states
+    }
+    run.status = 'running'
+    run.error = null
+    run.finishedAt = undefined
+    this.store.replaceAutomationRun(run)
+    // Drop runner trackers for the target step + every downstream stepState.
+    for (const runner of this.allRunners()) {
+      runner.dropStep?.(run.id, targetState.stepId)
+    }
+    for (const downstream of droppedStates) {
+      for (const runner of this.allRunners()) {
+        runner.dropStep?.(run.id, downstream.stepId)
+      }
+    }
+    // Why: persistent fallback — same rationale as retryRunFromStep. Includes
+    // the target's pre-reset snapshot plus every downstream state so the
+    // session-restart case can still tear down the prior attempt's tabs.
+    this.closePersistedStepPanes([
+      { ...targetState, openedPane: targetPriorOpened },
+      ...droppedStates
+    ])
+    this.broadcastAutomationsChanged()
     this.wakeChains()
     return run
   }
@@ -898,6 +1044,14 @@ export class AutomationService {
       this.updateLinearIssueRunner,
       this.collectCiResultsRunner
     ]
+  }
+
+  getTriggerPollStatus(): { source: TriggerSourceId; lastPollAt: number; intervalMs: number }[] {
+    if (!this.autoTriggerEngine?.getPollStatus) {
+      return []
+    }
+    const map = this.autoTriggerEngine.getPollStatus()
+    return Array.from(map, ([source, v]) => ({ source, ...v }))
   }
 
   /** Mark a run failed in response to a tick-time error and finalize any
