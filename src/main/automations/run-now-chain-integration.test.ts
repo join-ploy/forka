@@ -548,6 +548,115 @@ describe('runNow drives chain-shape automations end-to-end', () => {
     })
   })
 
+  const mkPromptStep = (id: string): Step => ({
+    id,
+    kind: 'run-prompt',
+    config: {
+      worktreeRef: 'wt1',
+      agentId: 'claude',
+      prompt: 'go',
+      doneDebounceSeconds: 0
+    },
+    onFailure: 'halt',
+    timeoutSeconds: null
+  })
+
+  it('keeps an all-failed parallel group in the persisted run (deterministic openPane failure)', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const automation = store.createAutomation({
+      name: 'Parallel chain',
+      prompt: '(ignored)',
+      agentId: 'claude',
+      projectId: 'r1',
+      workspaceMode: 'existing',
+      workspaceId: 'wt1',
+      timezone: 'UTC',
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: new Date('2030-01-01T00:00:00').getTime()
+    })
+    const stored = store.listAutomations().find((entry) => entry.id === automation.id)!
+    stored.trigger = { kind: 'manual' }
+    stored.steps = [[mkPromptStep('p1'), mkPromptStep('p2'), mkPromptStep('p3')]]
+
+    const { ipc, listeners } = makeFakeIpc()
+    // Every openPromptPane reply is a deterministic failure → the run-prompt
+    // runner returns outcome:'failed' (OpenPromptPaneError) for each sibling.
+    const send = vi.fn((channel: string, payload?: { requestId?: string }) => {
+      if (channel !== 'automations:openPromptPane' || !payload?.requestId) {
+        return
+      }
+      const replyChannel = `automations:openPromptPane:reply:${payload.requestId}`
+      listeners.get(replyChannel)?.({}, { ok: false, error: 'no pane available' })
+    })
+    const service = new AutomationService(store, {
+      tickMs: 60_000,
+      getAgentStatus: () => undefined,
+      getIpcMain: () => ipc as never
+    })
+    service.setWebContents({ isDestroyed: () => false, send } as never)
+    service.setRendererReady()
+
+    const result = await service.runNow(automation.id)
+    await vi.waitFor(
+      () => {
+        const r = store.getAutomationRun(result.id)
+        expect(r?.status).toBe('failed')
+      },
+      { timeout: 5_000, interval: 25 }
+    )
+
+    const persisted = store.getAutomationRun(result.id)
+    expect(persisted?.status).toBe('failed')
+    expect(persisted?.stepStates).toHaveLength(3)
+    expect(persisted?.stepStates?.map((s) => s.status)).toEqual(['failed', 'failed', 'failed'])
+  })
+
+  it('keeps an all-failed parallel group in the persisted run (thrown error → finalizeFailedRun)', async () => {
+    const store = await createStore()
+    store.addRepo(makeRepo())
+    const automation = store.createAutomation({
+      name: 'Parallel chain throw',
+      prompt: '(ignored)',
+      agentId: 'claude',
+      projectId: 'r1',
+      workspaceMode: 'existing',
+      workspaceId: 'wt1',
+      timezone: 'UTC',
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      dtstart: new Date('2030-01-01T00:00:00').getTime()
+    })
+    const stored = store.listAutomations().find((entry) => entry.id === automation.id)!
+    stored.trigger = { kind: 'manual' }
+    stored.steps = [[mkPromptStep('p1'), mkPromptStep('p2'), mkPromptStep('p3')]]
+
+    const { ipc } = makeFakeIpc()
+    const send = vi.fn()
+    const service = new AutomationService(store, {
+      tickMs: 60_000,
+      getAgentStatus: () => undefined,
+      getIpcMain: () => ipc as never
+    })
+    // Destroyed webContents → requirePaneCtx throws a plain Error inside each
+    // sibling's openPromptPane dep → the runner re-throws (transient) →
+    // Promise.all rejects → tick throws → finalizeFailedRun must persist.
+    service.setWebContents({ isDestroyed: () => true, send } as never)
+    service.setRendererReady()
+
+    const result = await service.runNow(automation.id)
+    await vi.waitFor(
+      () => {
+        const r = store.getAutomationRun(result.id)
+        expect(r?.status).toBe('failed')
+      },
+      { timeout: 5_000, interval: 25 }
+    )
+
+    const persisted = store.getAutomationRun(result.id)
+    expect(persisted?.status).toBe('failed')
+    expect(persisted?.stepStates).toHaveLength(3)
+  })
+
   it('uses the legacy dispatch path for automations without trigger+steps', async () => {
     const store = await createStore()
     store.addRepo(makeRepo())

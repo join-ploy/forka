@@ -220,6 +220,52 @@ describe('ChainExecutor', () => {
   })
 
   describe('parallel groups', () => {
+    it('persists the materialised group before awaiting the (blocking) sibling ticks', async () => {
+      // Why: a run-prompt sibling can block up to 30s on the openPromptPane /
+      // sendPromptToPane renderer round-trip. If the group is only persisted
+      // AFTER Promise.all, a restart during that window loses the entire
+      // materialised group from disk — it vanishes from run history. The
+      // executor must persist the freshly-materialised 'running' group before
+      // entering the blocking sibling ticks.
+      let resolveTick!: (value: { outcome: 'needs-more-time'; status: 'running' }) => void
+      const hangingTick = new Promise<{ outcome: 'needs-more-time'; status: 'running' }>((res) => {
+        resolveTick = res
+      })
+      const tick = vi.fn().mockReturnValue(hangingTick)
+      const runner: StepRunner = { tick }
+      const persistedSnapshots: { length: number; statuses: string[] }[] = []
+      const executor = new ChainExecutor({
+        getRunner: () => runner,
+        persistRun: (r) => {
+          persistedSnapshots.push({
+            length: r.stepStates?.length ?? 0,
+            statuses: (r.stepStates ?? []).map((s) => s.status)
+          })
+        },
+        now: () => 0
+      })
+      const s1: Step = { ...sampleStep, id: 's1' }
+      const s2: Step = { ...sampleStep, id: 's2' }
+      const r = run('a1')
+
+      // Fire the tick but do NOT await — the sibling ticks hang (mirroring a
+      // 30s openPromptPane wait), so executor.tick() stays pending.
+      void executor.tick(automation([[s1, s2]]), r)
+      // Flush the synchronous materialisation + persist that should precede the
+      // blocking Promise.all.
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(
+        persistedSnapshots.some(
+          (snap) => snap.length === 2 && snap.statuses.every((s) => s === 'running')
+        )
+      ).toBe(true)
+
+      // Release the hang so the pending tick can settle cleanly.
+      resolveTick({ outcome: 'needs-more-time', status: 'running' })
+    })
+
     it('ticks all siblings in a parallel group', async () => {
       const tick = vi.fn().mockResolvedValue({ outcome: 'needs-more-time', status: 'running' })
       const runner: StepRunner = { tick }

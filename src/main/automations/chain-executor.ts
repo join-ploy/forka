@@ -247,10 +247,24 @@ export class ChainExecutor {
     consumed: number
   ): Promise<boolean> {
     // Materialise step states for the group if they don't exist yet.
+    let materialised = false
     for (let i = 0; i < group.length; i++) {
       if (run.stepStates!.length <= consumed + i) {
         run.stepStates!.push(makeStepState(group[i], this.deps.now()))
+        materialised = true
       }
+    }
+
+    // Why: persist the freshly-materialised 'running' group BEFORE the
+    // Promise.all below, which can block for up to 30s while a run-prompt
+    // sibling awaits the openPromptPane / sendPromptToPane renderer round-trip.
+    // Without this, the materialised states live only in memory until the
+    // group's ticks settle — so a restart during that window loses the entire
+    // group from disk and it vanishes from run history. A solo step persists
+    // right after its own tick; a parallel group must do the same up-front
+    // since one slow sibling blocks the whole group's first persist.
+    if (materialised) {
+      this.deps.persistRun(run)
     }
 
     const groupStates = run.stepStates!.slice(consumed, consumed + group.length)
